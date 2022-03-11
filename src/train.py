@@ -23,6 +23,8 @@ from others.logging import logger, init_logger
 
 model_flags = ['hidden_size', 'ff_size', 'heads', 'inter_layers','encoder','ff_actv', 'use_interval','rnn_size']
 
+os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 def str2bool(v):
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -118,12 +120,12 @@ class ErrorHandler(object):
 
 
 def wait_and_validate(args, device_id):
-
     timestep = 0
     if (args.test_all):
         cp_files = sorted(glob.glob(os.path.join(args.model_path, 'model_step_*.pt')))
         cp_files.sort(key=os.path.getmtime)
         xent_lst = []
+
         for i, cp in enumerate(cp_files):
             step = int(cp.split('.')[-2].split('_')[-1])
             xent = validate(args,  device_id, cp, step)
@@ -140,6 +142,7 @@ def wait_and_validate(args, device_id):
         while (True):
             cp_files = sorted(glob.glob(os.path.join(args.model_path, 'model_step_*.pt')))
             cp_files.sort(key=os.path.getmtime)
+            print(cp_files)
             if (cp_files):
                 cp = cp_files[-1]
                 time_of_cp = os.path.getmtime(cp)

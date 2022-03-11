@@ -18,28 +18,52 @@ class Batch(object):
     def __init__(self, data=None, device=None,  is_test=False):
         """Create a Batch from a list of examples."""
         if data is not None:
+            # data: src, rdm_label, segs, clss, rdm_src, rdm_segs, rdm_cls
             self.batch_size = len(data)
             pre_src = [x[0] for x in data]
             pre_labels = [x[1] for x in data]
             pre_segs = [x[2] for x in data]
             pre_clss = [x[3] for x in data]
+            pre_rdm_src = [x[4] for x in data]
+            pre_rdm_segs = [x[5] for x in data]
+            pre_rdm_clss = [x[6] for x in data]
 
+            # bertsum for important sentence
+            rdm_src = torch.tensor(self._pad(pre_rdm_src, 0))
+            rdm_segs = torch.tensor(self._pad(pre_rdm_segs, 0))
+            rdm_mask = ~(rdm_src == 0)
+
+            rdm_clss = torch.tensor(self._pad(pre_rdm_clss, -1))
+            rdm_mask_cls = ~(rdm_clss == -1)
+            rdm_clss[rdm_clss == -1] = 0
+
+            # bertsum for extract
             src = torch.tensor(self._pad(pre_src, 0))
 
             labels = torch.tensor(self._pad(pre_labels, 0))
             segs = torch.tensor(self._pad(pre_segs, 0))
-            mask = 1 - (src == 0)
+            mask = ~(src == 0)
 
             clss = torch.tensor(self._pad(pre_clss, -1))
-            mask_cls = 1 - (clss == -1)
+            mask_cls = ~(clss == -1)
             clss[clss == -1] = 0
-
+            
+            # bertsum for extract
             setattr(self, 'clss', clss.to(device))
             setattr(self, 'mask_cls', mask_cls.to(device))
             setattr(self, 'src', src.to(device))
             setattr(self, 'labels', labels.to(device))
             setattr(self, 'segs', segs.to(device))
             setattr(self, 'mask', mask.to(device))
+            
+            # bertsum for important sentence
+            setattr(self, 'rdm_clss', rdm_clss.to(device))
+            setattr(self, 'rdm_mask_cls', rdm_mask_cls.to(device))
+            setattr(self, 'rdm_src', rdm_src.to(device))
+            setattr(self, 'rdm_segs', rdm_segs.to(device))
+            setattr(self, 'rdm_mask', rdm_mask.to(device))
+            
+            
 
             if (is_test):
                 src_str = [x[-2] for x in data]
@@ -88,8 +112,8 @@ def load_dataset(args, corpus_type, shuffle):
     # Sort the glob output by file name (by increasing indexes).
     pts = sorted(glob.glob(args.bert_data_path + '.' + corpus_type + '.[0-9]*.pt'))
     if pts:
-        if (shuffle):
-            random.shuffle(pts)
+        #if (shuffle):
+        #    random.shuffle(pts)
 
         for pt in pts:
             yield _lazy_dataset_loader(pt, corpus_type)
@@ -185,20 +209,64 @@ class DataIterator(object):
         src_txt = ex['src_txt']
         tgt_txt = ex['tgt_txt']
 
+        # 임의로 세문장 골라주기
+        # label
+        #print("label: ", len(labels))
+        numbers = [i for i in range(len(clss))]
+        rand_nums = sorted(random.sample(numbers, 3))
+        
+        rdm_label = [0 for _ in range(len(labels))]
+        for i in (rand_nums):
+            rdm_label[i] = 1
+        
+        # src
+        sents = []
+        start = 0
+
+        for i, c in enumerate(clss):
+            try:
+                sents.append(src[clss[i]:clss[i+1]])
+            except IndexError:
+                sents.append(src[clss[i]:])
+
+    
+        
+        rdm_src = []
+        for i in rand_nums:
+            rdm_src.extend(sents[i])
+
+        # segs
+        rdm_segs = []
+        for idx, n in enumerate(rand_nums):
+            s = sents[n]
+            tmp = [(idx % 2) for _ in range(len(s))]
+
+            rdm_segs.extend(tmp)
+            
+        # clss
+        rdm_clss = []
+        for i, t in enumerate(rdm_src):
+            if t == 101:
+                rdm_clss.append(i)
+
+
         if(is_test):
             return src,labels,segs, clss, src_txt, tgt_txt
         else:
-            return src,labels,segs, clss
+            return src, rdm_label, segs, clss, rdm_src, rdm_segs, rdm_clss#, label
 
     def batch_buffer(self, data, batch_size):
         minibatch, size_so_far = [], 0
         for ex in data:
             if(len(ex['src'])==0):
                 continue
+            
+            # ex: src, rdm_label, segs, clss, rdm_src, rdm_segs, rdm_cls
             ex = self.preprocess(ex, self.is_test)
             if(ex is None):
                 continue
             minibatch.append(ex)
+
             size_so_far = simple_batch_size_fn(ex, len(minibatch))
             if size_so_far == batch_size:
                 yield minibatch

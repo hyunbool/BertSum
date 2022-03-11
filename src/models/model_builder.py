@@ -49,6 +49,11 @@ class Bert(nn.Module):
             self.model = BertModel(bert_config)
 
     def forward(self, x, segs, mask):
+        """segs: segment embedding
+
+        Returns:
+            _type_: _description_
+        """
         encoded_layers, _ = self.model(x, segs, attention_mask =mask)
         top_vec = encoded_layers[-1]
         return top_vec
@@ -60,21 +65,30 @@ class Summarizer(nn.Module):
         super(Summarizer, self).__init__()
         self.args = args
         self.device = device
-        self.bert = Bert(args.temp_dir, load_pretrained_bert, bert_config)
+        
+        self.bert_autoencoder = Bert(args.temp_dir, load_pretrained_bert, bert_config)
+        self.bert_extractor = Bert(args.temp_dir, load_pretrained_bert, bert_config)
+        
+        self.pooling = nn.AvgPool2d((3, 1))
         if (args.encoder == 'classifier'):
-            self.encoder = Classifier(self.bert.model.config.hidden_size)
+            
+            self.encoder = Classifier(self.bert_extractor.model.config.hidden_size)
         elif(args.encoder=='transformer'):
-            self.encoder = TransformerInterEncoder(self.bert.model.config.hidden_size, args.ff_size, args.heads,
+            print("hidden: ", args.inter_layers)
+            self.encoder = TransformerInterEncoder(self.bert_extractor.model.config.hidden_size, args.ff_size, args.heads,
                                                    args.dropout, args.inter_layers)
         elif(args.encoder=='rnn'):
             self.encoder = RNNEncoder(bidirectional=True, num_layers=1,
-                                      input_size=self.bert.model.config.hidden_size, hidden_size=args.rnn_size,
+                                      input_size=self.bert_extractor.model.config.hidden_size, hidden_size=args.rnn_size,
                                       dropout=args.dropout)
         elif (args.encoder == 'baseline'):
-            bert_config = BertConfig(self.bert.model.config.vocab_size, hidden_size=args.hidden_size,
+            bert_config = BertConfig(self.bert_extractor.model.config.vocab_size, hidden_size=args.hidden_size,
                                      num_hidden_layers=6, num_attention_heads=8, intermediate_size=args.ff_size)
-            self.bert.model = BertModel(bert_config)
-            self.encoder = Classifier(self.bert.model.config.hidden_size)
+            
+            self.bert_extractor.model = BertModel(bert_config)
+            self.bert_autoencoder.model = BertModel(bert_config)
+            
+            self.encoder = Classifier(self.bert_extractor.model.config.hidden_size)
 
         if args.param_init != 0.0:
             for p in self.encoder.parameters():
@@ -85,13 +99,35 @@ class Summarizer(nn.Module):
                     xavier_uniform_(p)
 
         self.to(device)
+        
     def load_cp(self, pt):
         self.load_state_dict(pt['model'], strict=True)
 
-    def forward(self, x, segs, clss, mask, mask_cls, sentence_range=None):
+    def forward(self, x, segs, clss, mask, mask_cls,  rdm_src, rdm_segs, rdm_clss, rdm_mask, rdm_mask_cls, sentence_range=None):
+        # autoencoder
+        rdm_top_vec = self.bert_extractor(rdm_src, rdm_segs, rdm_mask)
+        
+        rdm_sents_vec = rdm_top_vec[torch.arange(rdm_top_vec.size(0)).unsqueeze(1), rdm_clss]
+        rdm_sents_vec = rdm_sents_vec * rdm_mask_cls[:, :, None].float()
+        rdm_sents_vec = self.pooling(rdm_sents_vec)
+        
+        # extractor
+        top_vec = self.bert_extractor(x, segs, mask)
 
-        top_vec = self.bert(x, segs, mask)
         sents_vec = top_vec[torch.arange(top_vec.size(0)).unsqueeze(1), clss]
         sents_vec = sents_vec * mask_cls[:, :, None].float()
+
+        
+        salience = nn.Bilinear(1, sents_vec.size(1), sents_vec.size(1)).to(self.device)
+
+        t_sents_vec = sents_vec.contiguous().view([sents_vec.size(0), self.bert_extractor.model.config.hidden_size, -1])
+        t_rdm_sents_vec = rdm_sents_vec.contiguous().view([rdm_sents_vec.size(0), self.bert_extractor.model.config.hidden_size, -1])
+
+        sents_vec = salience(t_rdm_sents_vec, t_sents_vec)
+        
+
+        
+        sents_vec = torch.transpose(sents_vec, 1, 2)
+
         sent_scores = self.encoder(sents_vec, mask_cls).squeeze(-1)
         return sent_scores, mask_cls

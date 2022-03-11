@@ -155,7 +155,6 @@ class BertData():
             return None
 
         original_src_txt = [' '.join(s) for s in src]
-
         labels = [0] * len(src)
         for l in oracle_ids:
             labels[l] = 1
@@ -194,7 +193,8 @@ class BertData():
 
         tgt_txt = '<q>'.join([' '.join(tt) for tt in tgt])
         src_txt = [original_src_txt[i] for i in idxs]
-        return src_subtoken_idxs, labels, segments_ids, cls_ids, src_txt, tgt_txt
+        doc_txt = ' '.join(src_txt)
+        return src_subtoken_idxs, labels, segments_ids, cls_ids, src_txt, tgt_txt, doc_txt
 
 
 def format_to_bert(args):
@@ -207,7 +207,6 @@ def format_to_bert(args):
         for json_f in glob.glob(pjoin(args.raw_path, '*' + corpus_type + '.*.json')):
             real_name = json_f.split('/')[-1]
             a_lst.append((json_f, args, pjoin(args.save_path, real_name.replace('json', 'bert.pt'))))
-        print(a_lst)
         pool = Pool(args.n_cpus)
         for d in pool.imap(_format_to_bert, a_lst):
             pass
@@ -253,21 +252,25 @@ def _format_to_bert(params):
 
     bert = BertData(args)
 
-    logger.info('Processing %s' % json_file)
+    #logger.info('Processing %s' % json_file)
     jobs = json.load(open(json_file))
     datasets = []
     for d in jobs:
+        #print(d)
         source, tgt = d['src'], d['tgt']
+        #print("source: ", source)
+        #print("="*30)
         if (args.oracle_mode == 'greedy'):
+            
             oracle_ids = greedy_selection(source, tgt, 3)
         elif (args.oracle_mode == 'combination'):
             oracle_ids = combination_selection(source, tgt, 3)
         b_data = bert.preprocess(source, tgt, oracle_ids)
         if (b_data is None):
             continue
-        indexed_tokens, labels, segments_ids, cls_ids, src_txt, tgt_txt = b_data
+        indexed_tokens, labels, segments_ids, cls_ids, src_txt, tgt_txt, doc_txt = b_data
         b_data_dict = {"src": indexed_tokens, "labels": labels, "segs": segments_ids, 'clss': cls_ids,
-                       'src_txt': src_txt, "tgt_txt": tgt_txt}
+                       'src_txt': src_txt, "tgt_txt": tgt_txt, "doc_txt": doc_txt}
         datasets.append(b_data_dict)
     logger.info('Saving to %s' % save_file)
     torch.save(datasets, save_file)
@@ -321,6 +324,5 @@ def format_to_lines(args):
 
 def _format_to_lines(params):
     f, args = params
-    print(f)
     source, tgt = load_json(f, args.lower)
     return {'src': source, 'tgt': tgt}

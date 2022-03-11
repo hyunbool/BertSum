@@ -137,9 +137,10 @@ class Trainer(object):
         self._start_report_manager(start_time=total_stats.start_time)
 
         while step <= train_steps:
-
+            
             reduce_counter = 0
             for i, batch in enumerate(train_iter):
+    
                 if self.n_gpu == 0 or (i % self.n_gpu == self.gpu_rank):
 
                     true_batchs.append(batch)
@@ -152,6 +153,7 @@ class Trainer(object):
                                                 .all_gather_list
                                                 (normalization))
 
+                        # loss 계산 
                         self._gradient_accumulation(
                             true_batchs, normalization, total_stats,
                             report_stats)
@@ -193,9 +195,14 @@ class Trainer(object):
                 clss = batch.clss
                 mask = batch.mask
                 mask_cls = batch.mask_cls
-
-                sent_scores, mask = self.model(src, segs, clss, mask, mask_cls)
-
+                rdm_src = batch.rdm_src
+                rdm_segs = batch.rdm_segs
+                rdm_clss = batch.rdm_clss
+                rdm_mask = batch.rdm_mask
+                rdm_mask_cls = batch.rdm_mask_cls
+            
+                sent_scores, mask = self.model(src, segs, clss, mask, mask_cls, rdm_src, rdm_segs, rdm_clss, rdm_mask, rdm_mask_cls)
+                print("sent_scores: ", sent_scores)
 
                 loss = self.loss(sent_scores, labels.float())
                 loss = (loss * mask.float()).sum()
@@ -310,15 +317,20 @@ class Trainer(object):
         for batch in true_batchs:
             if self.grad_accum_count == 1:
                 self.model.zero_grad()
-
             src = batch.src
             labels = batch.labels
             segs = batch.segs
             clss = batch.clss
             mask = batch.mask
             mask_cls = batch.mask_cls
+            rdm_src = batch.rdm_src
+            rdm_segs = batch.rdm_segs
+            rdm_clss = batch.rdm_clss
+            rdm_mask = batch.rdm_mask
+            rdm_mask_cls = batch.rdm_mask_cls
+            
 
-            sent_scores, mask = self.model(src, segs, clss, mask, mask_cls)
+            sent_scores, mask = self.model(src, segs, clss, mask, mask_cls, rdm_src, rdm_segs, rdm_clss, rdm_mask, rdm_mask_cls)
 
             loss = self.loss(sent_scores, labels.float())
             loss = (loss*mask.float()).sum()
