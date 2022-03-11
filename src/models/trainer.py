@@ -250,6 +250,11 @@ class Trainer(object):
                         clss = batch.clss
                         mask = batch.mask
                         mask_cls = batch.mask_cls
+                        rdm_src = batch.rdm_src
+                        rdm_segs = batch.rdm_segs
+                        rdm_clss = batch.rdm_clss
+                        rdm_mask = batch.rdm_mask
+                        rdm_mask_cls = batch.rdm_mask_cls
 
 
                         gold = []
@@ -261,7 +266,7 @@ class Trainer(object):
                             selected_ids = [[j for j in range(batch.clss.size(1)) if labels[i][j] == 1] for i in
                                             range(batch.batch_size)]
                         else:
-                            sent_scores, mask = self.model(src, segs, clss, mask, mask_cls)
+                            sent_scores, mask = self.model(src, segs, clss, mask, mask_cls, rdm_src, rdm_segs, rdm_clss, rdm_mask, rdm_mask_cls)
 
                             loss = self.loss(sent_scores, labels.float())
                             loss = (loss * mask.float()).sum()

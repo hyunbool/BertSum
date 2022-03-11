@@ -61,11 +61,11 @@ class Bert(nn.Module):
 
 
 class Summarizer(nn.Module):
-    def __init__(self, args, device, load_pretrained_bert = False, bert_config = None):
+    def __init__(self, args, device, load_pretrained_bert = False, bert_config = None, is_test=False):
         super(Summarizer, self).__init__()
         self.args = args
         self.device = device
-        
+        self.is_test = is_test
         self.bert_autoencoder = Bert(args.temp_dir, load_pretrained_bert, bert_config)
         self.bert_extractor = Bert(args.temp_dir, load_pretrained_bert, bert_config)
         
@@ -109,16 +109,19 @@ class Summarizer(nn.Module):
         
         rdm_sents_vec = rdm_top_vec[torch.arange(rdm_top_vec.size(0)).unsqueeze(1), rdm_clss]
         rdm_sents_vec = rdm_sents_vec * rdm_mask_cls[:, :, None].float()
-        rdm_sents_vec = self.pooling(rdm_sents_vec)
+        
         
         # extractor
         top_vec = self.bert_extractor(x, segs, mask)
 
         sents_vec = top_vec[torch.arange(top_vec.size(0)).unsqueeze(1), clss]
         sents_vec = sents_vec * mask_cls[:, :, None].float()
-
         
-        salience = nn.Bilinear(1, sents_vec.size(1), sents_vec.size(1)).to(self.device)
+        if self.is_test:
+            salience = nn.Bilinear(sents_vec.size(1), sents_vec.size(1), sents_vec.size(1)).to(self.device)
+        else:
+            rdm_sents_vec = self.pooling(rdm_sents_vec)
+            salience = nn.Bilinear(1, sents_vec.size(1), sents_vec.size(1)).to(self.device)
 
         t_sents_vec = sents_vec.contiguous().view([sents_vec.size(0), self.bert_extractor.model.config.hidden_size, -1])
         t_rdm_sents_vec = rdm_sents_vec.contiguous().view([rdm_sents_vec.size(0), self.bert_extractor.model.config.hidden_size, -1])

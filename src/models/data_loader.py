@@ -251,7 +251,7 @@ class DataIterator(object):
 
 
         if(is_test):
-            return src,labels,segs, clss, src_txt, tgt_txt
+            return src,labels, segs, clss, src, segs, clss, src_txt, tgt_txt
         else:
             return src, rdm_label, segs, clss, rdm_src, rdm_segs, rdm_clss#, label
 

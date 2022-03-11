@@ -23,8 +23,6 @@ from others.logging import logger, init_logger
 
 model_flags = ['hidden_size', 'ff_size', 'heads', 'inter_layers','encoder','ff_actv', 'use_interval','rnn_size']
 
-os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 def str2bool(v):
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -208,7 +206,7 @@ def test(args, device_id, pt, step):
     print(args)
 
     config = BertConfig.from_json_file(args.bert_config_path)
-    model = Summarizer(args, device, load_pretrained_bert=False, bert_config = config)
+    model = Summarizer(args, device, load_pretrained_bert=False, bert_config = config, is_test=True)
     model.load_cp(checkpoint)
     model.eval()
 
@@ -283,11 +281,11 @@ if __name__ == '__main__':
 
     parser.add_argument("-encoder", default='classifier', type=str, choices=['classifier','transformer','rnn','baseline'])
     parser.add_argument("-mode", default='train', type=str, choices=['train','validate','test'])
-    parser.add_argument("-bert_data_path", default='../bert_data/cnndm')
-    parser.add_argument("-model_path", default='../models/')
-    parser.add_argument("-result_path", default='../results/cnndm')
-    parser.add_argument("-temp_dir", default='../temp')
-    parser.add_argument("-bert_config_path", default='../bert_config_uncased_base.json')
+    parser.add_argument("-bert_data_path", default='./bert_data/cnndm')
+    parser.add_argument("-model_path", default='./models/')
+    parser.add_argument("-result_path", default='./results/cnndm')
+    parser.add_argument("-temp_dir", default='./temp')
+    parser.add_argument("-bert_config_path", default='./bert_config_uncased_base.json')
 
     parser.add_argument("-batch_size", default=1000, type=int)
 
