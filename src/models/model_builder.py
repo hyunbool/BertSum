@@ -69,7 +69,7 @@ class Summarizer(nn.Module):
         self.bert_autoencoder = Bert(args.temp_dir, load_pretrained_bert, bert_config)
         self.bert_extractor = Bert(args.temp_dir, load_pretrained_bert, bert_config)
         
-        self.pooling = nn.AvgPool2d((3, 1))
+        
         if (args.encoder == 'classifier'):
             
             self.encoder = Classifier(self.bert_extractor.model.config.hidden_size)
@@ -117,12 +117,11 @@ class Summarizer(nn.Module):
         sents_vec = top_vec[torch.arange(top_vec.size(0)).unsqueeze(1), clss]
         sents_vec = sents_vec * mask_cls[:, :, None].float()
         
-        if self.is_test:
-            salience = nn.Bilinear(sents_vec.size(1), sents_vec.size(1), sents_vec.size(1)).to(self.device)
-        else:
-            rdm_sents_vec = self.pooling(rdm_sents_vec)
-            salience = nn.Bilinear(1, sents_vec.size(1), sents_vec.size(1)).to(self.device)
 
+        pooling = nn.AvgPool2d((rdm_sents_vec.size(1), 1))
+        salience = nn.Bilinear(1, sents_vec.size(1), sents_vec.size(1)).to(self.device)
+
+        rdm_sents_vec = pooling(rdm_sents_vec)
         t_sents_vec = sents_vec.contiguous().view([sents_vec.size(0), self.bert_extractor.model.config.hidden_size, -1])
         t_rdm_sents_vec = rdm_sents_vec.contiguous().view([rdm_sents_vec.size(0), self.bert_extractor.model.config.hidden_size, -1])
 
