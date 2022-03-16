@@ -211,7 +211,6 @@ class DataIterator(object):
 
         # 임의로 세문장 골라주기
         # label
-        #print("label: ", len(labels))
         numbers = [i for i in range(len(clss))]
         rand_nums = sorted(random.sample(numbers, 3))
         
@@ -228,26 +227,16 @@ class DataIterator(object):
                 sents.append(src[clss[i]:clss[i+1]])
             except IndexError:
                 sents.append(src[clss[i]:])
-
-    
         
         rdm_src = []
         for i in rand_nums:
             rdm_src.extend(sents[i])
 
         # segs
-        rdm_segs = []
-        for idx, n in enumerate(rand_nums):
-            s = sents[n]
-            tmp = [(idx % 2) for _ in range(len(s))]
+        rdm_segs = [0 for _ in range(len(rdm_src))]
 
-            rdm_segs.extend(tmp)
-            
         # clss
-        rdm_clss = []
-        for i, t in enumerate(rdm_src):
-            if t == 101:
-                rdm_clss.append(i)
+        rdm_clss = [0] # 가장 첫번째 CLS만 사용 
 
 
         if(is_test):

@@ -110,7 +110,7 @@ class Summarizer(nn.Module):
         rdm_sents_vec = rdm_top_vec[torch.arange(rdm_top_vec.size(0)).unsqueeze(1), rdm_clss]
         rdm_sents_vec = rdm_sents_vec * rdm_mask_cls[:, :, None].float()
         
-        
+        #print(rdm_sents_vec.shape)
         # extractor
         top_vec = self.bert_extractor(x, segs, mask)
 
@@ -118,17 +118,14 @@ class Summarizer(nn.Module):
         sents_vec = sents_vec * mask_cls[:, :, None].float()
         
 
-        pooling = nn.AvgPool2d((rdm_sents_vec.size(1), 1))
+        #pooling = nn.AvgPool2d((rdm_sents_vec.size(1), 1))
         salience = nn.Bilinear(1, sents_vec.size(1), sents_vec.size(1)).to(self.device)
 
-        rdm_sents_vec = pooling(rdm_sents_vec)
+        #rdm_sents_vec = pooling(rdm_sents_vec)
         t_sents_vec = sents_vec.contiguous().view([sents_vec.size(0), self.bert_extractor.model.config.hidden_size, -1])
         t_rdm_sents_vec = rdm_sents_vec.contiguous().view([rdm_sents_vec.size(0), self.bert_extractor.model.config.hidden_size, -1])
 
         sents_vec = salience(t_rdm_sents_vec, t_sents_vec)
-        
-
-        
         sents_vec = torch.transpose(sents_vec, 1, 2)
 
         sent_scores = self.encoder(sents_vec, mask_cls).squeeze(-1)
