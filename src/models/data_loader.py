@@ -6,7 +6,15 @@ import torch
 
 from others.logging import logger
 
-
+import numpy as np
+import pandas as pd
+import nltk
+import re
+from nltk.tokenize import sent_tokenize
+from nltk.corpus import stopwords
+from gensim.models import Word2Vec
+from scipy import spatial
+import networkx as nx
 
 class Batch(object):
     def _pad(self, data, pad_id, width=-1):
@@ -194,6 +202,22 @@ class DataIterator(object):
         xs = self.dataset
         return xs
 
+    def rank_sent(self, sentence_tokens):
+        max_len=max([len(tokens) for tokens in sentence_tokens])
+        sentence_embeddings=[np.pad(embedding,(0,max_len-len(embedding)),'constant') for embedding in sentence_tokens]
+        
+        similarity_matrix = np.zeros([len(sentence_tokens), len(sentence_tokens)])
+        for i,row_embedding in enumerate(sentence_embeddings):
+            for j,column_embedding in enumerate(sentence_embeddings):
+                similarity_matrix[i][j]=1-spatial.distance.cosine(row_embedding,column_embedding)
+        
+        nx_graph = nx.from_numpy_array(similarity_matrix)
+        scores = nx.pagerank(nx_graph)
+        sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        idx = [k for k, _ in sorted_scores]
+        top_idx = sorted(idx[:3])
+    
+        return top_idx
 
     def preprocess(self, ex, is_test):
         src = ex['src']
@@ -208,40 +232,57 @@ class DataIterator(object):
         clss = ex['clss']
         src_txt = ex['src_txt']
         tgt_txt = ex['tgt_txt']
+        print(src_txt)
+        print(tgt_txt)
+        print(dd)
+        if is_test:
+            # segs
+            rdm_segs = [0 for _ in range(len(src))]
+        else: # training                
+            sents = []
+            start = 0
 
-        # 임의로 세문장 골라주기
-        # label
-        numbers = [i for i in range(len(clss))]
-        rand_nums = sorted(random.sample(numbers, 3))
-        
-        rdm_label = [0 for _ in range(len(labels))]
-        for i in (rand_nums):
-            rdm_label[i] = 1
-        
-        # src
-        sents = []
-        start = 0
+            for i, c in enumerate(clss):
+                try:
+                    sents.append(src[clss[i]:clss[i+1]])
+                except IndexError:
+                    sents.append(src[clss[i]:])
+            
+            # 임의로 세문장 골라주기
+            top_idx = self.rank_sent(sents)
+            
+            """
+            if 1 in labels:
+                top_idx = []
+                for idx, label in enumerate(labels):
+                    if label == 1:
+                        top_idx.append(idx)
+            else:
+                top_idx = self.rank_sent(sents)
+            """
 
-        for i, c in enumerate(clss):
-            try:
-                sents.append(src[clss[i]:clss[i+1]])
-            except IndexError:
-                sents.append(src[clss[i]:])
-        
-        rdm_src = []
-        for i in rand_nums:
-            rdm_src.extend(sents[i])
+            rdm_label = [0 for _ in range(len(labels))]
+            for i in (top_idx):
+                rdm_label[i] = 1
+                
 
-        # segs
-        rdm_segs = [0 for _ in range(len(rdm_src))]
+            rdm_src = []
+            for i in top_idx:
+                rdm_src.extend(sents[i])
+
+            # segs
+            rdm_segs = [0 for _ in range(len(rdm_src))]
 
         # clss
         rdm_clss = [0] # 가장 첫번째 CLS만 사용 
 
+        
 
         if(is_test):
-            return src,labels, segs, clss, src, segs, clss, src_txt, tgt_txt
+            return src, labels, segs, clss, src, rdm_segs, rdm_clss, src_txt, tgt_txt
         else:
+            #return src, labels, segs, clss, rdm_src, rdm_segs, rdm_clss#, label
+
             return src, rdm_label, segs, clss, rdm_src, rdm_segs, rdm_clss#, label
 
     def batch_buffer(self, data, batch_size):
@@ -293,3 +334,5 @@ class DataIterator(object):
 
                 yield batch
             return
+
+

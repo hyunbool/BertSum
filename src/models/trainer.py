@@ -105,6 +105,77 @@ class Trainer(object):
         if (model):
             self.model.train()
 
+    def tapt_train(self, train_iter_fct, train_steps, valid_iter_fct=None, valid_steps=-1):
+        """
+        The main training loops.
+        by iterating over training data (i.e. `train_iter_fct`)
+        and running validation (i.e. iterating over `valid_iter_fct`
+
+        Args:
+            train_iter_fct(function): a function that returns the train
+                iterator. e.g. something like
+                train_iter_fct = lambda: generator(*args, **kwargs)
+            valid_iter_fct(function): same as train_iter_fct, for valid data
+            train_steps(int):
+            valid_steps(int):
+            save_checkpoint_steps(int):
+
+        Return:
+            None
+        """
+        logger.info('Start training...')
+
+        # step =  self.optim._step + 1
+        step =  self.optim._step + 1
+        true_batchs = []
+        accum = 0
+        normalization = 0
+        train_iter = train_iter_fct()
+
+        total_stats = Statistics()
+        report_stats = Statistics()
+        self._start_report_manager(start_time=total_stats.start_time)
+
+        while step <= train_steps:
+            reduce_counter = 0
+            for i, batch in enumerate(train_iter):
+    
+                if self.n_gpu == 0 or (i % self.n_gpu == self.gpu_rank):
+
+                    true_batchs.append(batch)
+                    normalization += batch.batch_size
+                    accum += 1
+                    if accum == self.grad_accum_count:
+                        reduce_counter += 1
+                        if self.n_gpu > 1:
+                            normalization = sum(distributed
+                                                .all_gather_list
+                                                (normalization))
+
+                        # loss 계산 
+                        self._gradient_accumulation(
+                            true_batchs, normalization, total_stats,
+                            report_stats)
+
+                        report_stats = self._maybe_report_training(
+                            step, train_steps,
+                            self.optim.learning_rate,
+                            report_stats)
+
+                        true_batchs = []
+                        accum = 0
+                        normalization = 0
+                        if (step % self.save_checkpoint_steps == 0 and self.gpu_rank == 0):
+                            self._save(step)
+
+                        step += 1
+                        if step > train_steps:
+                            break
+            train_iter = train_iter_fct()
+
+        return total_stats
+    
+    
     def train(self, train_iter_fct, train_steps, valid_iter_fct=None, valid_steps=-1):
         """
         The main training loops.

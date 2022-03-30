@@ -17,7 +17,7 @@ from pytorch_pretrained_bert import BertConfig
 import distributed
 from models import data_loader, model_builder
 from models.data_loader import load_dataset
-from models.model_builder import Summarizer
+from models.model_builder import Summarizer, Bert
 from models.trainer import build_trainer
 from others.logging import logger, init_logger
 
@@ -199,7 +199,11 @@ def test(args, device_id, pt, step):
         test_from = args.test_from
     logger.info('Loading checkpoint from %s' % test_from)
     checkpoint = torch.load(test_from, map_location=lambda storage, loc: storage)
+
     opt = vars(checkpoint['opt'])
+    print(opt)
+
+    
     for k in opt.keys():
         if (k in model_flags):
             setattr(args, k, opt[k])
@@ -207,6 +211,7 @@ def test(args, device_id, pt, step):
 
     config = BertConfig.from_json_file(args.bert_config_path)
     model = Summarizer(args, device, load_pretrained_bert=False, bert_config = config, is_test=True)
+    #print(model)
     model.load_cp(checkpoint)
     model.eval()
 
@@ -272,7 +277,48 @@ def train(args, device_id):
     trainer = build_trainer(args, device_id, model, optim)
     trainer.train(train_iter_fct, args.train_steps)
 
+def tapt(args, device_id):
+    init_logger(args.log_file)
 
+    device = "cpu" if args.visible_gpus == '-1' else "cuda"
+    logger.info('Device ID %d' % device_id)
+    logger.info('Device %s' % device)
+    torch.manual_seed(args.seed)
+    random.seed(args.seed)
+    torch.backends.cudnn.deterministic = True
+
+    if device_id >= 0:
+        torch.cuda.set_device(device_id)
+        torch.cuda.manual_seed(args.seed)
+
+
+    torch.manual_seed(args.seed)
+    random.seed(args.seed)
+    torch.backends.cudnn.deterministic = True
+
+    def train_iter_fct():
+        return data_loader.Dataloader(args, load_dataset(args, 'train', shuffle=True), args.batch_size, device,
+                                                 shuffle=True, is_test=False)
+
+    model = Bert(args.temp_dir, load_pretrained_bert=True)
+    #model = Summarizer(args, device, load_pretrained_bert=True)
+    
+    if args.train_from != '':
+        logger.info('Loading checkpoint from %s' % args.train_from)
+        checkpoint = torch.load(args.train_from,
+                                map_location=lambda storage, loc: storage)
+        opt = vars(checkpoint['opt'])
+        for k in opt.keys():
+            if (k in model_flags):
+                setattr(args, k, opt[k])
+        model.load_cp(checkpoint)
+        optim = model_builder.build_optim(args, model, checkpoint)
+    else:
+        optim = model_builder.build_optim(args, model, None)
+
+    logger.info(model)
+    trainer = build_trainer(args, device_id, model, optim)
+    trainer.train(train_iter_fct, args.train_steps)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -280,7 +326,7 @@ if __name__ == '__main__':
 
 
     parser.add_argument("-encoder", default='classifier', type=str, choices=['classifier','transformer','rnn','baseline'])
-    parser.add_argument("-mode", default='train', type=str, choices=['train','validate','test'])
+    parser.add_argument("-mode", default='train', type=str, choices=['train','validate','test', 'tapt'])
     parser.add_argument("-bert_data_path", default='./bert_data/cnndm')
     parser.add_argument("-model_path", default='./models/')
     parser.add_argument("-result_path", default='./results/cnndm')
@@ -339,6 +385,8 @@ if __name__ == '__main__':
         multi_main(args)
     elif (args.mode == 'train'):
         train(args, device_id)
+    elif (args.mode == 'tapt'):
+        tapt(args, device_id)
     elif (args.mode == 'validate'):
         wait_and_validate(args, device_id)
     elif (args.mode == 'lead'):
@@ -352,3 +400,6 @@ if __name__ == '__main__':
         except:
             step = 0
         test(args, device_id, cp, step)
+
+
+
