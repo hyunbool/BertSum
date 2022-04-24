@@ -1,0 +1,15 @@
+**/bert_data/
+**/json_data/
+**/logs/
+**/merged_stories_tokenized/
+**/models/
+**/raw_data/
+**/results/
+**/stanford-corenlp-4.4.0/
+**/urls/
+*.json
+LOG_FILE
+**/__pycache__/
+**/temp/
+*.sh
+*.ipynb
