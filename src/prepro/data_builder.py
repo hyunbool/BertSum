@@ -191,7 +191,7 @@ class BertData():
         cls_ids = [i for i, t in enumerate(src_subtoken_idxs) if t == self.cls_vid]
         labels = labels[:len(cls_ids)]
 
-        tgt_txt = '<q>'.join([' '.join(tt) for tt in tgt])
+        tgt_txt = '<q>'.join([' '.join(tt) for tt in tgt]) # gold label
         src_txt = [original_src_txt[i] for i in idxs]
         doc_txt = ' '.join(src_txt)
         return src_subtoken_idxs, labels, segments_ids, cls_ids, src_txt, tgt_txt, doc_txt
@@ -257,7 +257,7 @@ def _format_to_bert(params):
     datasets = []
     for d in jobs:
         #print(d)
-        source, tgt = d['src'], d['tgt']
+        source, tgt = d['src'], d['tgt'] # tgt: gold label
         #print("source: ", source)
         #print("="*30)
         if (args.oracle_mode == 'greedy'):

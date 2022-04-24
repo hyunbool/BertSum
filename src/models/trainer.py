@@ -153,7 +153,7 @@ class Trainer(object):
                                                 (normalization))
 
                         # loss 계산 
-                        self._gradient_accumulation(
+                        self._tapt_gradient_accumulation(
                             true_batchs, normalization, total_stats,
                             report_stats)
 
@@ -339,21 +339,18 @@ class Trainer(object):
                         else:
                             sent_scores, mask = self.model(src, segs, clss, mask, mask_cls, rdm_src, rdm_segs, rdm_clss, rdm_mask, rdm_mask_cls)
 
-                            loss = self.loss(sent_scores, labels.float())
-                            loss = (loss * mask.float()).sum()
-                            batch_stats = Statistics(float(loss.cpu().data.numpy()), len(labels))
-                            stats.update(batch_stats)
-
                             sent_scores = sent_scores + mask.float()
                             sent_scores = sent_scores.cpu().data.numpy()
                             selected_ids = np.argsort(-sent_scores, 1)
-                        # selected_ids = np.sort(selected_ids,1)
+                        
+
                         for i, idx in enumerate(selected_ids):
+
                             _pred = []
                             if(len(batch.src_str[i])==0):
                                 continue
                             for j in selected_ids[i][:len(batch.src_str[i])]:
-                                if(j>=len( batch.src_str[i])):
+                                if(j>=len(batch.src_str[i])):
                                     continue
                                 candidate = batch.src_str[i][j].strip()
                                 if(self.args.block_trigram):
@@ -383,7 +380,59 @@ class Trainer(object):
 
         return stats
 
+    def _tapt_gradient_accumulation(self, true_batchs, normalization, total_stats,
+                               report_stats):
+        if self.grad_accum_count > 1:
+            self.model.zero_grad()
 
+        for batch in true_batchs:
+            if self.grad_accum_count == 1:
+                self.model.zero_grad()
+            src = batch.src
+
+            segs = batch.segs
+            clss = batch.clss
+            mask = batch.mask
+            mask_cls = batch.mask_cls
+
+            
+
+            top_vec = self.model(src, segs, mask)
+            print(top_vec)
+
+            loss = self.loss(top_vec, labels.float())
+            loss = (loss*mask.float()).sum()
+            (loss/loss.numel()).backward()
+            # loss.div(float(normalization)).backward()
+
+            batch_stats = Statistics(float(loss.cpu().data.numpy()), normalization)
+
+
+            total_stats.update(batch_stats)
+            report_stats.update(batch_stats)
+
+            # 4. Update the parameters and statistics.
+            if self.grad_accum_count == 1:
+                # Multi GPU gradient gather
+                if self.n_gpu > 1:
+                    grads = [p.grad.data for p in self.model.parameters()
+                             if p.requires_grad
+                             and p.grad is not None]
+                    distributed.all_reduce_and_rescale_tensors(
+                        grads, float(1))
+                self.optim.step()
+
+        # in case of multi step gradient accumulation,
+        # update only after accum batches
+        if self.grad_accum_count > 1:
+            if self.n_gpu > 1:
+                grads = [p.grad.data for p in self.model.parameters()
+                         if p.requires_grad
+                         and p.grad is not None]
+                distributed.all_reduce_and_rescale_tensors(
+                    grads, float(1))
+            self.optim.step()
+            
 
     def _gradient_accumulation(self, true_batchs, normalization, total_stats,
                                report_stats):

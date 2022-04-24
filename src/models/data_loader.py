@@ -47,7 +47,6 @@ class Batch(object):
 
             # bertsum for extract
             src = torch.tensor(self._pad(pre_src, 0))
-
             labels = torch.tensor(self._pad(pre_labels, 0))
             segs = torch.tensor(self._pad(pre_segs, 0))
             mask = ~(src == 0)
@@ -231,13 +230,40 @@ class DataIterator(object):
             segs=[0]*len(segs)
         clss = ex['clss']
         src_txt = ex['src_txt']
+
         tgt_txt = ex['tgt_txt']
-        print(src_txt)
-        print(tgt_txt)
-        print(dd)
+
         if is_test:
+            sents = []
+            start = 0
+            
+            for i, c in enumerate(clss):
+                try:
+                    sents.append(src[clss[i]:clss[i+1]])
+                except IndexError:
+                    sents.append(src[clss[i]:])
+            
+            # 임의로 세문장 골라주기
+            #top_idx = sorted(self.rank_sent(sents))
+            
+            # random 
+            #numbers = [i for i in range(len(clss))]
+            #top_idx = sorted(random.sample(numbers, 3))  
+            
+            #rdm_src = []
+            #for i in top_idx:
+            #    rdm_src.extend(sents[i])
+                
+
+            #rdm_label = [0 for _ in range(len(labels))]
+            #for i in (top_idx):
+            #    rdm_label[i] = 1
+                
             # segs
             rdm_segs = [0 for _ in range(len(src))]
+            
+            #tgt_txt = " ".join([src_txt[i] for i in top_idx])
+
         else: # training                
             sents = []
             start = 0
@@ -248,18 +274,15 @@ class DataIterator(object):
                 except IndexError:
                     sents.append(src[clss[i]:])
             
-            # 임의로 세문장 골라주기
-            top_idx = self.rank_sent(sents)
+            # textrank
+            #top_idx = sorted(self.rank_sent(sents))
             
-            """
-            if 1 in labels:
-                top_idx = []
-                for idx, label in enumerate(labels):
-                    if label == 1:
-                        top_idx.append(idx)
-            else:
-                top_idx = self.rank_sent(sents)
-            """
+            # random 
+            numbers = [i for i in range(len(clss))]
+            top_idx = sorted(random.sample(numbers, 3))   
+           
+            # lead
+            #top_idx = [0, 1, 2]
 
             rdm_label = [0 for _ in range(len(labels))]
             for i in (top_idx):
@@ -272,6 +295,7 @@ class DataIterator(object):
 
             # segs
             rdm_segs = [0 for _ in range(len(rdm_src))]
+            
 
         # clss
         rdm_clss = [0] # 가장 첫번째 CLS만 사용 
@@ -279,11 +303,11 @@ class DataIterator(object):
         
 
         if(is_test):
-            return src, labels, segs, clss, src, rdm_segs, rdm_clss, src_txt, tgt_txt
+            return src, labels, segs, clss, src, segs, clss, src_txt, tgt_txt
         else:
             #return src, labels, segs, clss, rdm_src, rdm_segs, rdm_clss#, label
 
-            return src, rdm_label, segs, clss, rdm_src, rdm_segs, rdm_clss#, label
+            return src, rdm_label, segs, clss, src, rdm_segs, rdm_clss#, label
 
     def batch_buffer(self, data, batch_size):
         minibatch, size_so_far = [], 0

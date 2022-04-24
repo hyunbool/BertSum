@@ -1,13 +1,12 @@
 
 import torch
 import torch.nn as nn
-from pytorch_pretrained_bert import BertModel, BertConfig
+from pytorch_pretrained_bert import BertModel, BertConfig, BertForMaskedLM
 from torch.nn.init import xavier_uniform_
 
 from models.encoder import TransformerInterEncoder, Classifier, RNNEncoder
 from models.optimizers import Optimizer
-from transformers import DistilBertTokenizer, DistilBertModel
-
+from transformers import BartForConditionalGeneration, BartConfig
 
 def build_optim(args, model, checkpoint):
     """ Build optimizer """
@@ -40,6 +39,7 @@ def build_optim(args, model, checkpoint):
 
     return optim
 
+    
 
 class Bert(nn.Module):
     def __init__(self, temp_dir, load_pretrained_bert, bert_config = None):
@@ -59,15 +59,36 @@ class Bert(nn.Module):
         top_vec = encoded_layers[-1]
         return top_vec
 
+class Bart(nn.Module):
+    def __init__(self, args, temp_dir, load_pretrained_bart, bart_config):
+        super(Bart, self).__init__()
+        if(load_pretrained_bart):
+            #configuration = BartConfig()
+            #self.model = BartForConditionalGeneration(configuration)
+            #self.model.load_state_dict(torch.load("/home/tako/BertSum/checkpoint-179000/pytorch_model.bin"))
+            self.model = BartForConditionalGeneration.from_pretrained("/home/tako/BertSum/checkpoint-179000")
+        else:
+            self.model = BartModel(bart_config)
+
+    def forward(self, x, segs, mask):
+        """segs: segment embedding
+
+        Returns:
+            _type_: _description_
+        """
+        output = self.model(x)
+        top_vec = output.last_hidden_state
+        
+        return top_vec
 
 
 class Summarizer(nn.Module):
-    def __init__(self, args, device, load_pretrained_bert = False, bert_config = None, is_test=False):
+    def __init__(self, args, device, load_pretrained_bert = False, load_pretrained_bart = False, bert_config = None, bart_config = None, is_test=False):
         super(Summarizer, self).__init__()
         self.args = args
         self.device = device
         self.is_test = is_test
-        self.bert_autoencoder = Bert(args.temp_dir, load_pretrained_bert, bert_config)
+        self.bart_autoencoder = Bart(args, args.temp_dir, load_pretrained_bart, bart_config)
         self.bert_extractor = Bert(args.temp_dir, load_pretrained_bert, bert_config)
         
         
@@ -85,7 +106,7 @@ class Summarizer(nn.Module):
             bert_config = BertConfig(self.bert_extractor.model.config.vocab_size, hidden_size=args.hidden_size,
                                      num_hidden_layers=6, num_attention_heads=8, intermediate_size=args.ff_size)
             
-            self.bert_extractor.model = BertModel(bert_config)
+            self.bert_extractor.model = BartModel(bert_config)
             self.bert_autoencoder.model = BertModel(bert_config)
             
             self.encoder = Classifier(self.bert_extractor.model.config.hidden_size * 2)
@@ -105,21 +126,22 @@ class Summarizer(nn.Module):
 
     def forward(self, x, segs, clss, mask, mask_cls,  rdm_src, rdm_segs, rdm_clss, rdm_mask, rdm_mask_cls, sentence_range=None):
         # autoencoder
-        rdm_top_vec = self.bert_extractor(rdm_src, rdm_segs, rdm_mask)
+        rdm_top_vec = self.bart_autoencoder(rdm_src)
         
         rdm_sents_vec = rdm_top_vec[torch.arange(rdm_top_vec.size(0)).unsqueeze(1), rdm_clss]
         rdm_sents_vec = rdm_sents_vec * rdm_mask_cls[:, :, None].float()
-        
+
         # extractor
         top_vec = self.bert_extractor(x, segs, mask)
 
         sents_vec = top_vec[torch.arange(top_vec.size(0)).unsqueeze(1), clss]
         sents_vec = sents_vec * mask_cls[:, :, None].float()
 
-        new_sents_vec = torch.zeros(sents_vec.size(0), sents_vec.size(1), 768*2).to(sents_vec.device)
+        #new_sents_vec = torch.zeros(sents_vec.size(0), sents_vec.size(1), 768*2).to(sents_vec.device)
 
-        for i in range(sents_vec.size(1)):
-            new_sents_vec[:,i] = torch.cat((sents_vec[:, i], rdm_sents_vec[:,0]), 1)   
+        #for i in range(sents_vec.size(1)):
+        #    new_sents_vec[:,i] = torch.cat((sents_vec[:, i], rdm_sents_vec[:,0]), 1)   
+        new_sents_vec = torch.cat((sents_vec, rdm_sents_vec), 2)
  
         sent_scores = self.encoder(new_sents_vec, mask_cls).squeeze(-1)
         return sent_scores, mask_cls

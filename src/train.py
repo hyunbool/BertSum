@@ -16,10 +16,12 @@ from pytorch_pretrained_bert import BertConfig
 
 import distributed
 from models import data_loader, model_builder
-from models.data_loader import load_dataset
-from models.model_builder import Summarizer, Bert
+from models.data_loader import *
+from models.pretrain_data_loader import *
+from models.model_builder import *
 from models.trainer import build_trainer
 from others.logging import logger, init_logger
+from transformers import BartModel, BartConfig
 
 model_flags = ['hidden_size', 'ff_size', 'heads', 'inter_layers','encoder','ff_actv', 'use_interval','rnn_size']
 
@@ -178,7 +180,8 @@ def validate(args,  device_id, pt, step):
             setattr(args, k, opt[k])
     print(args)
 
-    config = BertConfig.from_json_file(args.bert_config_path)
+    #config = BertConfig.from_json_file(args.bert_config_path)
+    model = BartModel.from_pretrained('facebook/bart-large')
     model = Summarizer(args, device, load_pretrained_bert=False, bert_config = config)
     model.load_cp(checkpoint)
     model.eval()
@@ -209,8 +212,9 @@ def test(args, device_id, pt, step):
             setattr(args, k, opt[k])
     print(args)
 
-    config = BertConfig.from_json_file(args.bert_config_path)
-    model = Summarizer(args, device, load_pretrained_bert=False, bert_config = config, is_test=True)
+    bert_config = BertConfig.from_json_file(args.bert_config_path)
+    bart_config = BartConfig.from_pretrained('facebook/bart-base')
+    model = Summarizer(args, device, load_pretrained_bert=False, load_pretrained_bart=False, bert_config = bert_config, bart_config = bart_config, is_test=True)
     #print(model)
     model.load_cp(checkpoint)
     model.eval()
@@ -259,7 +263,7 @@ def train(args, device_id):
         return data_loader.Dataloader(args, load_dataset(args, 'train', shuffle=True), args.batch_size, device,
                                                  shuffle=True, is_test=False)
 
-    model = Summarizer(args, device, load_pretrained_bert=True)
+    model = Summarizer(args, device, load_pretrained_bert=True, load_pretrained_bart=True)
     if args.train_from != '':
         logger.info('Loading checkpoint from %s' % args.train_from)
         checkpoint = torch.load(args.train_from,
@@ -277,7 +281,33 @@ def train(args, device_id):
     trainer = build_trainer(args, device_id, model, optim)
     trainer.train(train_iter_fct, args.train_steps)
 
-def tapt(args, device_id):
+
+def without_finetuned_test(args, device_id, step):
+    
+    device = "cpu" if args.visible_gpus == '-1' else "cuda"
+
+    torch.manual_seed(args.seed)
+    random.seed(args.seed)
+    torch.backends.cudnn.deterministic = True
+    
+    
+    if device_id >= 0:
+        torch.cuda.set_device(device_id)
+        torch.cuda.manual_seed(args.seed)
+        
+    bert_config = BertConfig.from_json_file(args.bert_config_path)
+    bart_config = BartConfig.from_pretrained('facebook/bart-base')
+    model = Summarizer(args, device, load_pretrained_bert=False, load_pretrained_bart=False, bert_config = bert_config, bart_config = bart_config, is_test=True)    
+    #model = Summarizer(args, device, load_pretrained_bert=True)
+    model.eval()
+
+    test_iter =data_loader.Dataloader(args, load_dataset(args, 'test', shuffle=False),
+                                  args.batch_size, device,
+                                  shuffle=False, is_test=True)
+    trainer = build_trainer(args, device_id, model, None)
+    trainer.test(test_iter,step)
+
+def pretrain(args, device_id):
     init_logger(args.log_file)
 
     device = "cpu" if args.visible_gpus == '-1' else "cuda"
@@ -297,11 +327,10 @@ def tapt(args, device_id):
     torch.backends.cudnn.deterministic = True
 
     def train_iter_fct():
-        return data_loader.Dataloader(args, load_dataset(args, 'train', shuffle=True), args.batch_size, device,
+        return pretrain_data_loader.Dataloader(args, load_dataset(args, 'train', shuffle=True), args.batch_size, device,
                                                  shuffle=True, is_test=False)
 
-    model = Bert(args.temp_dir, load_pretrained_bert=True)
-    #model = Summarizer(args, device, load_pretrained_bert=True)
+    model = Bart(args, device, load_pretrained_bart=True)
     
     if args.train_from != '':
         logger.info('Loading checkpoint from %s' % args.train_from)
@@ -319,14 +348,15 @@ def tapt(args, device_id):
     logger.info(model)
     trainer = build_trainer(args, device_id, model, optim)
     trainer.train(train_iter_fct, args.train_steps)
-
+    
+    
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
 
 
     parser.add_argument("-encoder", default='classifier', type=str, choices=['classifier','transformer','rnn','baseline'])
-    parser.add_argument("-mode", default='train', type=str, choices=['train','validate','test', 'tapt'])
+    parser.add_argument("-mode", default='train', type=str, choices=['train','validate','test', 'lead', 'oracle', 'without_test'])
     parser.add_argument("-bert_data_path", default='./bert_data/cnndm')
     parser.add_argument("-model_path", default='./models/')
     parser.add_argument("-result_path", default='./results/cnndm')
@@ -385,8 +415,6 @@ if __name__ == '__main__':
         multi_main(args)
     elif (args.mode == 'train'):
         train(args, device_id)
-    elif (args.mode == 'tapt'):
-        tapt(args, device_id)
     elif (args.mode == 'validate'):
         wait_and_validate(args, device_id)
     elif (args.mode == 'lead'):
@@ -400,6 +428,8 @@ if __name__ == '__main__':
         except:
             step = 0
         test(args, device_id, cp, step)
+    elif (args.mode == 'without_test'):
+        without_finetuned_test(args, device_id, step=0)
 
-
-
+    elif (args.mode == 'tapt'):
+        tapt_train(args, device_id)
