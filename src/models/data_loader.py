@@ -102,7 +102,6 @@ def load_dataset(args, corpus_type, shuffle):
     """
     Dataset generator. Don't do extra stuff here, like printing,
     because they will be postponed to the first loading time.
-
     Args:
         corpus_type: 'train' or 'valid'
     Returns:
@@ -266,7 +265,6 @@ class DataIterator(object):
 
         else: # training                
             sents = []
-            start = 0
 
             for i, c in enumerate(clss):
                 try:
@@ -307,7 +305,7 @@ class DataIterator(object):
         else:
             #return src, labels, segs, clss, rdm_src, rdm_segs, rdm_clss#, label
 
-            return src, rdm_label, segs, clss, src, rdm_segs, rdm_clss#, label
+            return src, rdm_label, segs, clss, rdm_src, rdm_segs, rdm_clss#, label
 
     def batch_buffer(self, data, batch_size):
         minibatch, size_so_far = [], 0

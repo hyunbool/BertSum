@@ -1,12 +1,12 @@
 
 import torch
 import torch.nn as nn
-from pytorch_pretrained_bert import BertModel, BertConfig, BertForMaskedLM
+from pytorch_pretrained_bert import BertModel, BertConfig
 from torch.nn.init import xavier_uniform_
 
 from models.encoder import TransformerInterEncoder, Classifier, RNNEncoder
 from models.optimizers import Optimizer
-from transformers import BartForConditionalGeneration, BartConfig
+from transformers import BartModel, BartForConditionalGeneration
 
 def build_optim(args, model, checkpoint):
     """ Build optimizer """
@@ -63,23 +63,25 @@ class Bart(nn.Module):
     def __init__(self, args, temp_dir, load_pretrained_bart, bart_config):
         super(Bart, self).__init__()
         if(load_pretrained_bart):
-            #configuration = BartConfig()
-            #self.model = BartForConditionalGeneration(configuration)
-            #self.model.load_state_dict(torch.load("/home/tako/BertSum/checkpoint-179000/pytorch_model.bin"))
-            self.model = BartForConditionalGeneration.from_pretrained("/home/tako/BertSum/checkpoint-179000")
+            #self.model = BartModel.from_pretrained('facebook/bart-base')
+            self.model = BartModel.from_pretrained("/home/tako/BertSum/checkpoint-179000")
+            
         else:
             self.model = BartModel(bart_config)
 
-    def forward(self, x, segs, mask):
+    def forward(self, x):
         """segs: segment embedding
 
         Returns:
             _type_: _description_
         """
         output = self.model(x)
-        top_vec = output.last_hidden_state
+        
+        #top_vec = output.last_hidden_state
+        top_vec = output.encoder_last_hidden_state
         
         return top_vec
+
 
 
 class Summarizer(nn.Module):
@@ -128,20 +130,22 @@ class Summarizer(nn.Module):
         # autoencoder
         rdm_top_vec = self.bart_autoencoder(rdm_src)
         
+        
         rdm_sents_vec = rdm_top_vec[torch.arange(rdm_top_vec.size(0)).unsqueeze(1), rdm_clss]
         rdm_sents_vec = rdm_sents_vec * rdm_mask_cls[:, :, None].float()
 
+        
         # extractor
         top_vec = self.bert_extractor(x, segs, mask)
 
         sents_vec = top_vec[torch.arange(top_vec.size(0)).unsqueeze(1), clss]
         sents_vec = sents_vec * mask_cls[:, :, None].float()
 
-        #new_sents_vec = torch.zeros(sents_vec.size(0), sents_vec.size(1), 768*2).to(sents_vec.device)
+        new_sents_vec = torch.zeros(sents_vec.size(0), sents_vec.size(1), 768*2).to(sents_vec.device)
 
-        #for i in range(sents_vec.size(1)):
-        #    new_sents_vec[:,i] = torch.cat((sents_vec[:, i], rdm_sents_vec[:,0]), 1)   
-        new_sents_vec = torch.cat((sents_vec, rdm_sents_vec), 2)
- 
+        for i in range(sents_vec.size(1)):
+            new_sents_vec[:,i] = torch.cat((sents_vec[:, i], rdm_sents_vec[:,0]), 1)   
+        #new_sents_vec = torch.cat((sents_vec, rdm_sents_vec), 2)
+
         sent_scores = self.encoder(new_sents_vec, mask_cls).squeeze(-1)
         return sent_scores, mask_cls
