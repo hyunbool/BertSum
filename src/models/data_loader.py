@@ -294,9 +294,8 @@ class DataIterator(object):
             # segs
             rdm_segs = [0 for _ in range(len(rdm_src))]
             
-
         # clss
-        rdm_clss = [0] # 가장 첫번째 CLS만 사용 
+        rdm_clss = top_idx #[0] # 가장 첫번째 CLS만 사용 
 
         
 

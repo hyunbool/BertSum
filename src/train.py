@@ -263,6 +263,8 @@ def train(args, device_id):
         return data_loader.Dataloader(args, load_dataset(args, 'train', shuffle=True), args.batch_size, device,
                                                  shuffle=True, is_test=False)
 
+
+
     model = Summarizer(args, device, load_pretrained_bert=True, load_pretrained_bart=True)
     if args.train_from != '':
         logger.info('Loading checkpoint from %s' % args.train_from)
@@ -355,6 +357,8 @@ if __name__ == '__main__':
     parser.add_argument('-log_file', default='../logs/cnndm.log')
     parser.add_argument('-dataset', default='')
     parser.add_argument('-seed', default=666, type=int)
+    
+    parser.add_argument('-n_topic', default=20, type=int)
 
     parser.add_argument("-test_all", type=str2bool, nargs='?',const=True,default=False)
     parser.add_argument("-test_from", default='')
