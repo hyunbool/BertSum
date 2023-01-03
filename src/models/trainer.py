@@ -11,7 +11,22 @@ from models.stats import Statistics
 from others.logging import logger
 from others.utils import test_rouge, rouge_results_to_str
 
+from PacSum.code.extractor import *
+from PacSum.code.data_iterator import Dataset
+from collections import OrderedDict
 
+from scipy import spatial
+import networkx as nx
+
+import h5py
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.autograd import Variable
+ 
+
+        
 def _tally_parameters(model):
     n_params = sum([p.nelement() for p in model.parameters()])
     return n_params
@@ -100,81 +115,26 @@ class Trainer(object):
         self.report_manager = report_manager
 
         self.loss = torch.nn.BCELoss(reduction='none')
+        #self.loss = torch.nn.BCEWithLogitsLoss()
+        self.mseloss = torch.nn.MSELoss(reduction='none')
+        self.kldloss = torch.nn.KLDivLoss(reduction="batchmean")
+        #self.nlloss = torch.nn.NLLLoss()
+        self.nlloss = torch.nn.BCEWithLogitsLoss(reduction='none')
+        # self.focalloss = FocalLoss()
+        
         assert grad_accum_count > 0
         # Set model in training mode.
         if (model):
             self.model.train()
 
-    def tapt_train(self, train_iter_fct, train_steps, valid_iter_fct=None, valid_steps=-1):
-        """
-        The main training loops.
-        by iterating over training data (i.e. `train_iter_fct`)
-        and running validation (i.e. iterating over `valid_iter_fct`
-
-        Args:
-            train_iter_fct(function): a function that returns the train
-                iterator. e.g. something like
-                train_iter_fct = lambda: generator(*args, **kwargs)
-            valid_iter_fct(function): same as train_iter_fct, for valid data
-            train_steps(int):
-            valid_steps(int):
-            save_checkpoint_steps(int):
-
-        Return:
-            None
-        """
-        logger.info('Start training...')
-
-        # step =  self.optim._step + 1
-        step =  self.optim._step + 1
-        true_batchs = []
-        accum = 0
-        normalization = 0
-        train_iter = train_iter_fct()
-
-        total_stats = Statistics()
-        report_stats = Statistics()
-        self._start_report_manager(start_time=total_stats.start_time)
-
-        while step <= train_steps:
-            reduce_counter = 0
-            for i, batch in enumerate(train_iter):
-    
-                if self.n_gpu == 0 or (i % self.n_gpu == self.gpu_rank):
-
-                    true_batchs.append(batch)
-                    normalization += batch.batch_size
-                    accum += 1
-                    if accum == self.grad_accum_count:
-                        reduce_counter += 1
-                        if self.n_gpu > 1:
-                            normalization = sum(distributed
-                                                .all_gather_list
-                                                (normalization))
-
-                        # loss 계산 
-                        self._tapt_gradient_accumulation(
-                            true_batchs, normalization, total_stats,
-                            report_stats)
-
-                        report_stats = self._maybe_report_training(
-                            step, train_steps,
-                            self.optim.learning_rate,
-                            report_stats)
-
-                        true_batchs = []
-                        accum = 0
-                        normalization = 0
-                        if (step % self.save_checkpoint_steps == 0 and self.gpu_rank == 0):
-                            self._save(step)
-
-                        step += 1
-                        if step > train_steps:
-                            break
-            train_iter = train_iter_fct()
-
-        return total_stats
-    
+        beta = 0.
+        lambda1 = 0.
+        lambda2 = 0.
+        self.extractor = PacSumExtractorWithBert(bert_config_file = "/home/tako/BertSum/pacssum_models/bert_config.json",
+                            bert_model_file = "./pacssum_models/pytorch_model_finetuned.bin",
+                            beta = beta,
+                            lambda1 = lambda1,
+                            lambda2 = lambda2)
     
     def train(self, train_iter_fct, train_steps, valid_iter_fct=None, valid_steps=-1):
         """
@@ -194,6 +154,23 @@ class Trainer(object):
         Return:
             None
         """
+        # Set model in validating mode.
+        def _get_ngrams(n, text):
+            ngram_set = set()
+            text_length = len(text)
+            max_index_ngram_start = text_length - n
+            for i in range(max_index_ngram_start + 1):
+                ngram_set.add(tuple(text[i:i + n]))
+            return ngram_set
+
+        def _block_tri(c, p):
+            tri_c = _get_ngrams(3, c.split())
+            for s in p:
+                tri_s = _get_ngrams(3, s.split())
+                if len(tri_c.intersection(tri_s))>0:
+                    return True
+            return False
+        
         logger.info('Start training...')
 
         # step =  self.optim._step + 1
@@ -225,7 +202,7 @@ class Trainer(object):
                                                 (normalization))
 
                         # loss 계산 
-                        self._gradient_accumulation(
+                        sent_scores, mask = self._gradient_accumulation(
                             true_batchs, normalization, total_stats,
                             report_stats)
 
@@ -239,6 +216,51 @@ class Trainer(object):
                         normalization = 0
                         if (step % self.save_checkpoint_steps == 0 and self.gpu_rank == 0):
                             self._save(step)
+                            can_path = '%s_step%d.candidate'%("./results/training",step)
+                            gold_path = '%s_step%d.gold' % ("./results/training", step)
+                            gold = []
+                            pred = []
+                        
+                            with open(can_path, 'w') as save_pred:
+                                with open(gold_path, 'w') as save_gold:
+                                    sent_scores = sent_scores + mask.float()
+                                    sent_scores = sent_scores.cpu().data.numpy()
+                                    selected_ids = np.argsort(-sent_scores, 1)
+                                    
+                                    for i, idx in enumerate(selected_ids):
+                                        _pred = []
+                                        predictions = {}
+                                        if(len(batch.src_str[i])==0):
+                                            continue
+                                        for j in selected_ids[i][:len(batch.src_str[i])]:
+                                            if(j>=len(batch.src_str[i])):
+                                                continue
+                                            candidate = batch.src_str[i][j].strip()
+                                            if(self.args.block_trigram):
+                                                if(not _block_tri(candidate,_pred)):
+                                                    _pred.append(candidate)
+                                                    predictions[j] = candidate
+                                            else:
+                                                _pred.append(candidate)
+                                                predictions[j] = candidate
+
+                                            if ((not self.args.recall_eval) and len(_pred) == 3):
+                                                break
+
+                                        _pred = [x[1] for x in sorted(predictions.items())]
+
+                                        _pred = '<q>'.join(_pred)
+                                        if(self.args.recall_eval):
+                                            _pred = ' '.join(_pred.split()[:len(batch.tgt_str[i].split())])
+
+                                        pred.append(_pred)
+                                        gold.append(batch.tgt_str[i])
+                                    for i in range(len(gold)):
+                                        save_gold.write(gold[i].strip()+'\n')
+                                    for i in range(len(pred)):
+                                        save_pred.write(pred[i].strip()+'\n')
+                            rouges = test_rouge(self.args.temp_dir, can_path, gold_path)
+                            logger.info('Rouges at step %d \n%s' % (step, rouge_results_to_str(rouges)))
 
                         step += 1
                         if step > train_steps:
@@ -271,9 +293,9 @@ class Trainer(object):
                 rdm_clss = batch.rdm_clss
                 rdm_mask = batch.rdm_mask
                 rdm_mask_cls = batch.rdm_mask_cls
+                #tp = batch.tp
             
-                sent_scores, mask = self.model(src, segs, clss, mask, mask_cls, rdm_src, rdm_segs, rdm_clss, rdm_mask, rdm_mask_cls)
-                print("sent_scores: ", sent_scores)
+                sent_scores, mask = self.model(src, segs, clss, mask, mask_cls, rdm_src, rdm_segs, rdm_clss, rdm_mask, rdm_mask_cls)#, tp)
 
                 loss = self.loss(sent_scores, labels.float())
                 loss = (loss * mask.float()).sum()
@@ -321,11 +343,16 @@ class Trainer(object):
                         clss = batch.clss
                         mask = batch.mask
                         mask_cls = batch.mask_cls
+                        src_txt = batch.src_str
+                        tgt_txt = batch.tgt_str
+
                         rdm_src = batch.rdm_src
                         rdm_segs = batch.rdm_segs
                         rdm_clss = batch.rdm_clss
                         rdm_mask = batch.rdm_mask
                         rdm_mask_cls = batch.rdm_mask_cls
+
+                        #tp = batch.tp
 
 
                         gold = []
@@ -333,20 +360,20 @@ class Trainer(object):
 
                         if (cal_lead):
                             selected_ids = [list(range(batch.clss.size(1)))] * batch.batch_size
+
                         elif (cal_oracle):
                             selected_ids = [[j for j in range(batch.clss.size(1)) if labels[i][j] == 1] for i in
                                             range(batch.batch_size)]
                         else:
-                            sent_scores, mask = self.model(src, segs, clss, mask, mask_cls, rdm_src, rdm_segs, rdm_clss, rdm_mask, rdm_mask_cls)
-
+                            sent_scores, mask = self.model(src, segs, clss, mask, mask_cls, rdm_src, rdm_segs, rdm_clss, rdm_mask, rdm_mask_cls)#, src_txt, tgt_txt)#, tp)
                             sent_scores = sent_scores + mask.float()
                             sent_scores = sent_scores.cpu().data.numpy()
                             selected_ids = np.argsort(-sent_scores, 1)
                         
-
                         for i, idx in enumerate(selected_ids):
-
+                            #_pred = []
                             _pred = []
+                            predictions = {}
                             if(len(batch.src_str[i])==0):
                                 continue
                             for j in selected_ids[i][:len(batch.src_str[i])]:
@@ -356,11 +383,15 @@ class Trainer(object):
                                 if(self.args.block_trigram):
                                     if(not _block_tri(candidate,_pred)):
                                         _pred.append(candidate)
+                                        predictions[j] = candidate
                                 else:
                                     _pred.append(candidate)
+                                    predictions[j] = candidate
 
                                 if ((not cal_oracle) and (not self.args.recall_eval) and len(_pred) == 3):
                                     break
+                            print("=")
+                            _pred = [x[1] for x in sorted(predictions.items())]
 
                             _pred = '<q>'.join(_pred)
                             if(self.args.recall_eval):
@@ -379,60 +410,248 @@ class Trainer(object):
         self._report_step(0, step, valid_stats=stats)
 
         return stats
-
-    def _tapt_gradient_accumulation(self, true_batchs, normalization, total_stats,
-                               report_stats):
-        if self.grad_accum_count > 1:
-            self.model.zero_grad()
-
-        for batch in true_batchs:
-            if self.grad_accum_count == 1:
-                self.model.zero_grad()
-            src = batch.src
-
-            segs = batch.segs
-            clss = batch.clss
-            mask = batch.mask
-            mask_cls = batch.mask_cls
-
+    
+    def pacsum(self, sentences):
+        summaries = []
+        for sentence_token in sentences:
+            # dtype = h5py.special_dtype(vlen=str)
+            # documents = list()
             
+            # doc_json = dict()
+            # doc_json["title"] = " "
+            # doc_json["article"] = sentence_token
 
-            top_vec = self.model(src, segs, mask)
-            print(top_vec)
+            # documents.append(doc_json)
 
-            loss = self.loss(top_vec, labels.float())
-            loss = (loss*mask.float()).sum()
-            (loss/loss.numel()).backward()
-            # loss.div(float(normalization)).backward()
+            # documents = np.array(documents, dtype=dtype)
 
-            batch_stats = Statistics(float(loss.cpu().data.numpy()), normalization)
+            # f = h5py.File('seg_train.h5df','w')  # 'a'
+            # f.create_dataset('dataset', data=documents)
+            # f.close()
+        
+            # 데이터 가져오기
+            tune_dataset = Dataset(sentence_token, vocab_file="./pacssum_models/vocab.txt")
+            tune_dataset_iterator = tune_dataset.iterate_once_doc_bert() # tune_dataset_iterator = value
+            summary = self.extractor.extract_summary(tune_dataset_iterator)
+            summaries.append(sorted(summary[0]))
+        return summaries
+    
+    def pacsum_test(self, test_iter, step, cal_lead=False, cal_oracle=False):
+        # Set model in validating mode.
+        def _get_ngrams(n, text):
+            ngram_set = set()
+            text_length = len(text)
+            max_index_ngram_start = text_length - n
+            for i in range(max_index_ngram_start + 1):
+                ngram_set.add(tuple(text[i:i + n]))
+            return ngram_set
+
+        stats = Statistics()
+
+        can_path = '%s_step%d.candidate'%(self.args.result_path,step)
+        gold_path = '%s_step%d.gold' % (self.args.result_path, step)
+        with open(can_path, 'w') as save_pred:
+            with open(gold_path, 'w') as save_gold:
+                with torch.no_grad():
+                    for batch in test_iter:
+                        src = batch.src
+                        labels = batch.labels
+                        src_txt = batch.src_str
+                        tgt_txt = batch.tgt_str
+                        #tp = batch.tp
+                        #print("len tgt: ", len(tgt_txt))
+                        gold = []
+                        pred = []
+
+                        
+                        selected_ids = self.pacsum(src_txt)
+                        #print("len tgt: ", len(src_txt))
+                        print(selected_ids)
+                        for i, idx in enumerate(selected_ids):
+                            #_pred = []
+                            _pred = []
+
+                            for j in selected_ids[i]:
+                                candidate = batch.src_str[i][j].strip()
+                                _pred.append(candidate)
+
+                            _pred = '<q>'.join(_pred).replace("\n", " ")
+                            tgt = batch.tgt_str[i].replace("\n", " ")
+                            
+                            save_gold.write(tgt.strip()+'\n')
+                            save_pred.write(_pred.strip()+'\n')
+
+                            print(_pred)
+                            print(" ")
+                            print(tgt)
+                            print("="*30)
+
+                        # for i in range(len(gold)):
+                        #     save_gold.write(gold[i].strip()+'\n')
+                        #     save_pred.write(pred[i].strip()+'\n')
+                        
+        if(step!=-1 and self.args.report_rouge):
+            rouges = test_rouge(self.args.temp_dir, can_path, gold_path)
+            logger.info('Rouges at step %d \n%s' % (step, rouge_results_to_str(rouges)))
+        self._report_step(0, step, valid_stats=stats)
+
+        return stats
+
+    def rank_sent(self, sentence_tokens):
+        max_len=max([len(tokens) for tokens in sentence_tokens])
+        sentence_embeddings=[np.pad(embedding,(0,max_len-len(embedding)),'constant') for embedding in sentence_tokens]
+        similarity_matrix = np.zeros([len(sentence_tokens), len(sentence_tokens)])
+        for i,row_embedding in enumerate(sentence_embeddings):
+            for j,column_embedding in enumerate(sentence_embeddings):
+                similarity_matrix[i][j]=1-spatial.distance.cosine(row_embedding,column_embedding)
+        
+        nx_graph = nx.from_numpy_array(similarity_matrix)
+        scores = nx.pagerank(nx_graph)
+        sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        idx = [k for k, _ in sorted_scores]
+    
+        return sorted(idx[:3])
+    
+    def textrank_test(self, test_iter, step, cal_lead=False, cal_oracle=False):
+        
+        # Set model in validating mode.
+        def _get_ngrams(n, text):
+            ngram_set = set()
+            text_length = len(text)
+            max_index_ngram_start = text_length - n
+            for i in range(max_index_ngram_start + 1):
+                ngram_set.add(tuple(text[i:i + n]))
+            return ngram_set
+
+        stats = Statistics()
+
+        can_path = '%s_step%d.candidate'%(self.args.result_path,step)
+        gold_path = '%s_step%d.gold' % (self.args.result_path, step)
+        with open(can_path, 'w') as save_pred:
+            with open(gold_path, 'w') as save_gold:
+                with torch.no_grad():
+                    for batch in test_iter:
+                        src = batch.src
+                        clss = []
+                        for s in src:
+                            c = [i for i, t in enumerate(s) if t == 101]
+                            clss.append(c)
+        
+                        labels = batch.labels
+                        src_txt = batch.src_str
+                        tgt_txt = batch.tgt_str
+                        #tp = batch.tp
+                        #print("len tgt: ", len(tgt_txt))
+                        gold = []
+                        pred = []
 
 
-            total_stats.update(batch_stats)
-            report_stats.update(batch_stats)
+                        sents = []
 
-            # 4. Update the parameters and statistics.
-            if self.grad_accum_count == 1:
-                # Multi GPU gradient gather
-                if self.n_gpu > 1:
-                    grads = [p.grad.data for p in self.model.parameters()
-                             if p.requires_grad
-                             and p.grad is not None]
-                    distributed.all_reduce_and_rescale_tensors(
-                        grads, float(1))
-                self.optim.step()
+                        for s, c in zip(src, clss):
+                            sent = []
+                            for i, cl in enumerate(c):
+                                try:
+                                    sent.append(s[c[i]:c[i+1]].tolist())
+                                except IndexError:
+                                    tmp = s[c[i]:].tolist()
+                                    while 0 in tmp:
+                                        tmp.remove(0)
+                                    sent.append(tmp)
+                            sents.append(sent)
+                        
+                        #selected_ids = [0, 1, 2]
+                        #selected_ids = [list(range(3))] * batch.batch_size
+                        selected_ids = []
+                        for s in sents:
+                            selected_ids.append(self.rank_sent(s))
 
-        # in case of multi step gradient accumulation,
-        # update only after accum batches
-        if self.grad_accum_count > 1:
-            if self.n_gpu > 1:
-                grads = [p.grad.data for p in self.model.parameters()
-                         if p.requires_grad
-                         and p.grad is not None]
-                distributed.all_reduce_and_rescale_tensors(
-                    grads, float(1))
-            self.optim.step()
-            
+                        #print("len tgt: ", len(src_txt))
+
+                        for i, idx in enumerate(selected_ids):
+                            #_pred = []
+                            _pred = []
+
+                            for j in selected_ids[i]:
+                                candidate = batch.src_str[i][j].strip()
+                                _pred.append(candidate)
+
+                            _pred = '<q>'.join(_pred).replace("\n", " ")
+                            tgt = batch.tgt_str[i].replace("\n", " ")
+                            
+                            save_gold.write(tgt.strip()+'\n')
+                            save_pred.write(_pred.strip()+'\n')
+
+
+                        # for i in range(len(gold)):
+                        #     save_gold.write(gold[i].strip()+'\n')
+                        #     save_pred.write(pred[i].strip()+'\n')
+                        
+        if(step!=-1 and self.args.report_rouge):
+            rouges = test_rouge(self.args.temp_dir, can_path, gold_path)
+            logger.info('Rouges at step %d \n%s' % (step, rouge_results_to_str(rouges)))
+        self._report_step(0, step, valid_stats=stats)
+
+        return stats
+        
+    def lead3_test(self, test_iter, step, cal_lead=False, cal_oracle=False):
+        # Set model in validating mode.
+        def _get_ngrams(n, text):
+            ngram_set = set()
+            text_length = len(text)
+            max_index_ngram_start = text_length - n
+            for i in range(max_index_ngram_start + 1):
+                ngram_set.add(tuple(text[i:i + n]))
+            return ngram_set
+
+        stats = Statistics()
+
+        can_path = '%s_step%d.candidate'%(self.args.result_path,step)
+        gold_path = '%s_step%d.gold' % (self.args.result_path, step)
+        with open(can_path, 'w') as save_pred:
+            with open(gold_path, 'w') as save_gold:
+                with torch.no_grad():
+                    for batch in test_iter:
+                        src = batch.src
+                        labels = batch.labels
+                        src_txt = batch.src_str
+                        tgt_txt = batch.tgt_str
+                        #tp = batch.tp
+                        #print("len tgt: ", len(tgt_txt))
+                        gold = []
+                        pred = []
+
+                        #selected_ids = [0, 1, 2]
+                        selected_ids = [list(range(3))] * batch.batch_size
+
+                        #print("len tgt: ", len(src_txt))
+
+                        for i, idx in enumerate(selected_ids):
+                            #_pred = []
+                            _pred = []
+
+                            for j in selected_ids[i]:
+                                candidate = batch.src_str[i][j].strip()
+                                _pred.append(candidate)
+
+                            _pred = '<q>'.join(_pred).replace("\n", " ")
+                            tgt = batch.tgt_str[i].replace("\n", " ")
+                            
+                            save_gold.write(tgt.strip()+'\n')
+                            save_pred.write(_pred.strip()+'\n')
+
+
+                        # for i in range(len(gold)):
+                        #     save_gold.write(gold[i].strip()+'\n')
+                        #     save_pred.write(pred[i].strip()+'\n')
+                        
+        if(step!=-1 and self.args.report_rouge):
+            rouges = test_rouge(self.args.temp_dir, can_path, gold_path)
+            logger.info('Rouges at step %d \n%s' % (step, rouge_results_to_str(rouges)))
+        self._report_step(0, step, valid_stats=stats)
+
+        return stats
+        
 
     def _gradient_accumulation(self, true_batchs, normalization, total_stats,
                                report_stats):
@@ -453,12 +672,27 @@ class Trainer(object):
             rdm_clss = batch.rdm_clss
             rdm_mask = batch.rdm_mask
             rdm_mask_cls = batch.rdm_mask_cls
+            src_str = batch.src_str
+            tgt_str = batch.tgt_str
+            #tp = batch.tp
             
 
-            sent_scores, mask = self.model(src, segs, clss, mask, mask_cls, rdm_src, rdm_segs, rdm_clss, rdm_mask, rdm_mask_cls)
+            sent_scores, mask = self.model(src, segs, clss, mask, mask_cls, rdm_src, rdm_segs, rdm_clss, rdm_mask, rdm_mask_cls)#, src_str, tgt_str)#, tp)
+            #print("sent_scores: ", sent_scores)
 
+            
             loss = self.loss(sent_scores, labels.float())
+            #loss = self.mseloss(sent_scores, labels.float())
+            #loss = self.kldloss(sent_scores, labels.float())
+            #loss = self.nlloss(sent_scores, labels.float())
+            #print(loss)
+            #loss = torch.sqrt((loss*mask.float()).sum())
             loss = (loss*mask.float()).sum()
+
+            #print(loss)
+            #print("=")
+            #loss = (loss).sum()
+
             (loss/loss.numel()).backward()
             # loss.div(float(normalization)).backward()
 
@@ -489,6 +723,8 @@ class Trainer(object):
                 distributed.all_reduce_and_rescale_tensors(
                     grads, float(1))
             self.optim.step()
+            
+        return sent_scores, mask
 
     def _save(self, step):
         real_model = self.model
@@ -564,3 +800,5 @@ class Trainer(object):
         """
         if self.model_saver is not None:
             self.model_saver.maybe_save(step)
+
+

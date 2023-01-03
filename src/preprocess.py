@@ -18,7 +18,12 @@ def do_tokenize(args):
     data_builder.tokenize(args)
     print(time.clock())
 
-def do_format_to_bert(args):
+def do_format_to_bert_test(args):
+    print(time.clock())
+    data_builder.format_to_bert(args)
+    print(time.clock())
+    
+def do_format_to_bert_train(args):
     print(time.clock())
     data_builder.format_to_bert(args)
     print(time.clock())
@@ -36,6 +41,7 @@ def str2bool(v):
 
 
 if __name__ == '__main__':
+    print("in main")
     parser = argparse.ArgumentParser()
     parser.add_argument("-mode", default='', type=str, help='format_to_lines or format_to_bert')
     parser.add_argument("-oracle_mode", default='greedy', type=str, help='how to generate oracle summaries, greedy or combination, combination will generate more accurate oracles but take much longer time.')

@@ -23,6 +23,8 @@ from models.trainer import build_trainer
 from others.logging import logger, init_logger
 from transformers import BartModel, BartConfig
 
+#os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+
 model_flags = ['hidden_size', 'ff_size', 'heads', 'inter_layers','encoder','ff_actv', 'use_interval','rnn_size']
 
 
@@ -213,8 +215,8 @@ def test(args, device_id, pt, step):
     print(args)
 
     bert_config = BertConfig.from_json_file(args.bert_config_path)
-    bart_config = BartConfig.from_pretrained('facebook/bart-base')
-    model = Summarizer(args, device, load_pretrained_bert=False, load_pretrained_bart=False, bert_config = bert_config, bart_config = bart_config, is_test=True)
+
+    model = Summarizer(args, device, load_pretrained_bert=False, bert_config = bert_config)
     #print(model)
     model.load_cp(checkpoint)
     model.eval()
@@ -225,6 +227,32 @@ def test(args, device_id, pt, step):
     trainer = build_trainer(args, device_id, model, None)
     trainer.test(test_iter,step)
 
+def pacsum_test(args, device_id):
+    
+    device = "cpu" if args.visible_gpus == '-1' else "cuda"
+    test_iter =data_loader.Dataloader(args, load_dataset(args, 'test', shuffle=False),
+                                  args.batch_size, device,
+                                  shuffle=False, is_test=True)
+    trainer = build_trainer(args, device_id, 0, None)
+    trainer.pacsum_test(test_iter,0)
+    
+def lead3_test(args, device_id):
+    
+    device = "cpu" if args.visible_gpus == '-1' else "cuda"
+    test_iter =data_loader.Dataloader(args, load_dataset(args, 'test', shuffle=False),
+                                  args.batch_size, device,
+                                  shuffle=False, is_test=True)
+    trainer = build_trainer(args, device_id, 0, None)
+    trainer.lead3_test(test_iter,0)
+    
+def textrank_test(args, device_id):
+    
+    device = "cpu" if args.visible_gpus == '-1' else "cuda"
+    test_iter =data_loader.Dataloader(args, load_dataset(args, 'test', shuffle=False),
+                                  args.batch_size, device,
+                                  shuffle=False, is_test=True)
+    trainer = build_trainer(args, device_id, 0, None)
+    trainer.textrank_test(test_iter,0)
 
 def baseline(args, cal_lead=False, cal_oracle=False):
 
@@ -265,7 +293,7 @@ def train(args, device_id):
 
 
 
-    model = Summarizer(args, device, load_pretrained_bert=True, load_pretrained_bart=True)
+    model = Summarizer(args, device, load_pretrained_bert=True)
     if args.train_from != '':
         logger.info('Loading checkpoint from %s' % args.train_from)
         checkpoint = torch.load(args.train_from,
@@ -284,32 +312,6 @@ def train(args, device_id):
     trainer.train(train_iter_fct, args.train_steps)
 
 
-def without_finetuned_test(args, device_id, step):
-    
-    device = "cpu" if args.visible_gpus == '-1' else "cuda"
-
-    torch.manual_seed(args.seed)
-    random.seed(args.seed)
-    torch.backends.cudnn.deterministic = True
-    
-    
-    if device_id >= 0:
-        torch.cuda.set_device(device_id)
-        torch.cuda.manual_seed(args.seed)
-        
-    bert_config = BertConfig.from_json_file(args.bert_config_path)
-    bart_config = BartConfig.from_pretrained('facebook/bart-base')
-    model = Summarizer(args, device, load_pretrained_bert=False, load_pretrained_bart=False, bert_config = bert_config, bart_config = bart_config, is_test=True)    
-    #model = Summarizer(args, device, load_pretrained_bert=True)
-    model.eval()
-
-    test_iter =data_loader.Dataloader(args, load_dataset(args, 'test', shuffle=False),
-                                  args.batch_size, device,
-                                  shuffle=False, is_test=True)
-    trainer = build_trainer(args, device_id, model, None)
-    trainer.test(test_iter,step)
-
-
     
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -317,7 +319,7 @@ if __name__ == '__main__':
 
 
     parser.add_argument("-encoder", default='classifier', type=str, choices=['classifier','transformer','rnn','baseline'])
-    parser.add_argument("-mode", default='train', type=str, choices=['train','validate','test', 'lead', 'oracle', 'without_test'])
+    parser.add_argument("-mode", default='train', type=str, choices=['train','validate','test', 'lead', 'oracle', 'without_test', 'pacsum_test', 'lead3_test', 'textrank_test'])
     parser.add_argument("-bert_data_path", default='./bert_data/cnndm')
     parser.add_argument("-model_path", default='./models/')
     parser.add_argument("-result_path", default='./results/cnndm')
@@ -328,7 +330,7 @@ if __name__ == '__main__':
 
     parser.add_argument("-use_interval", type=str2bool, nargs='?',const=True,default=True)
     parser.add_argument("-hidden_size", default=128, type=int)
-    parser.add_argument("-ff_size", default=512, type=int)
+    parser.add_argument("-ff_size", default=1024, type=int)
     parser.add_argument("-heads", default=4, type=int)
     parser.add_argument("-inter_layers", default=2, type=int)
     parser.add_argument("-rnn_size", default=512, type=int)
@@ -352,19 +354,22 @@ if __name__ == '__main__':
     parser.add_argument("-recall_eval", type=str2bool, nargs='?',const=True,default=False)
 
 
-    parser.add_argument('-visible_gpus', default='-1', type=str)
-    parser.add_argument('-gpu_ranks', default='0', type=str)
+    parser.add_argument('-visible_gpus', default='0,1', type=str)
+    parser.add_argument('-gpu_ranks', default='0,1', type=str)
     parser.add_argument('-log_file', default='../logs/cnndm.log')
     parser.add_argument('-dataset', default='')
     parser.add_argument('-seed', default=666, type=int)
     
-    parser.add_argument('-n_topic', default=20, type=int)
+    parser.add_argument('-n_topic', default=768, type=int)
+    parser.add_argument('-topicmodel', default="cnndm_Namespace(epoch=50, lr=0.003, n_topic=768, weight_decay=0.0001)_epoch_49.pt", type=str)
 
     parser.add_argument("-test_all", type=str2bool, nargs='?',const=True,default=False)
     parser.add_argument("-test_from", default='')
     parser.add_argument("-train_from", default='')
     parser.add_argument("-report_rouge", type=str2bool, nargs='?',const=True,default=True)
     parser.add_argument("-block_trigram", type=str2bool, nargs='?', const=True, default=True)
+    
+    parser.add_argument("-loss_method", default='BCELoss', type=str)
 
     args = parser.parse_args()
     args.gpu_ranks = [int(i) for i in args.gpu_ranks.split(',')]
@@ -391,8 +396,14 @@ if __name__ == '__main__':
         except:
             step = 0
         test(args, device_id, cp, step)
-    elif (args.mode == 'without_test'):
-        without_finetuned_test(args, device_id, step=0)
+        
+    elif (args.mode == 'pacsum_test'):
+        pacsum_test(args, device_id)
+        
+    elif (args.mode == 'lead3_test'):
+        lead3_test(args, device_id)
+    
+    elif (args.mode == 'textrank_test'):
+        textrank_test(args, device_id)
 
-    elif (args.mode == 'tapt'):
-        tapt_train(args, device_id)
+

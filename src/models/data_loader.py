@@ -15,6 +15,12 @@ from nltk.corpus import stopwords
 from gensim.models import Word2Vec
 from scipy import spatial
 import networkx as nx
+import os
+import h5py
+from PacSum.code.extractor import *
+from PacSum.code.data_iterator import Dataset
+from collections import OrderedDict
+import json
 
 class Batch(object):
     def _pad(self, data, pad_id, width=-1):
@@ -47,14 +53,15 @@ class Batch(object):
 
             # bertsum for extract
             src = torch.tensor(self._pad(pre_src, 0))
-            labels = torch.tensor(self._pad(pre_labels, 0))
+            labels = torch.tensor(self._pad(pre_labels, 0.))
             segs = torch.tensor(self._pad(pre_segs, 0))
             mask = ~(src == 0)
 
             clss = torch.tensor(self._pad(pre_clss, -1))
             mask_cls = ~(clss == -1)
             clss[clss == -1] = 0
-            
+
+
             # bertsum for extract
             setattr(self, 'clss', clss.to(device))
             setattr(self, 'mask_cls', mask_cls.to(device))
@@ -72,11 +79,11 @@ class Batch(object):
             
             
 
-            if (is_test):
-                src_str = [x[-2] for x in data]
-                setattr(self, 'src_str', src_str)
-                tgt_str = [x[-1] for x in data]
-                setattr(self, 'tgt_str', tgt_str)
+            #if (is_test):
+            src_str = [x[-2] for x in data]
+            setattr(self, 'src_str', src_str)
+            tgt_str = [x[-1] for x in data]
+            setattr(self, 'tgt_str', tgt_str)
 
     def __len__(self):
         return self.batch_size
@@ -151,6 +158,7 @@ class Dataloader(object):
         self.device = device
         self.shuffle = shuffle
         self.is_test = is_test
+
         self.cur_iter = self._next_dataset_iterator(datasets)
 
         assert self.cur_iter is not None
@@ -193,6 +201,15 @@ class DataIterator(object):
         self.sort_key = lambda x: len(x[1])
 
         self._iterations_this_epoch = 0
+        
+        beta = 0.
+        lambda1 = 0.
+        lambda2 = 0.
+        self.extractor = PacSumExtractorWithBert(bert_config_file = "/home/tako/BertSum/pacssum_models/bert_config.json",
+                                    bert_model_file = "./pacssum_models/pytorch_model_finetuned.bin",
+                                    beta = beta,
+                                    lambda1 = lambda1,
+                                    lambda2 = lambda2)
 
     def data(self):
         if self.shuffle:
@@ -200,8 +217,17 @@ class DataIterator(object):
         xs = self.dataset
         return xs
 
+    def pacsum(self, sentence_token):
+        # 데이터 가져오기
+        tune_dataset = Dataset(sentence_token)
+        tune_dataset_iterator = tune_dataset.iterate_once_doc_bert() # tune_dataset_iterator = value
+        summaries = self.extractor.extract_summary(tune_dataset_iterator)
+        
+        return summaries[0]
+        
     def rank_sent(self, sentence_tokens):
         max_len=max([len(tokens) for tokens in sentence_tokens])
+        print("m:", max_len)
         sentence_embeddings=[np.pad(embedding,(0,max_len-len(embedding)),'constant') for embedding in sentence_tokens]
         
         similarity_matrix = np.zeros([len(sentence_tokens), len(sentence_tokens)])
@@ -228,84 +254,73 @@ class DataIterator(object):
         if(not self.args.use_interval):
             segs=[0]*len(segs)
         clss = ex['clss']
+        
         src_txt = ex['src_txt']
-
         tgt_txt = ex['tgt_txt']
 
-        if is_test:
-            sents = []
-            start = 0
-            
-            for i, c in enumerate(clss):
-                try:
-                    sents.append(src[clss[i]:clss[i+1]])
-                except IndexError:
-                    sents.append(src[clss[i]:])
-            
-            # 임의로 세문장 골라주기
-            #top_idx = sorted(self.rank_sent(sents))
-            
-            # random 
-            #numbers = [i for i in range(len(clss))]
-            #top_idx = sorted(random.sample(numbers, 3))  
-            
-            #rdm_src = []
-            #for i in top_idx:
-            #    rdm_src.extend(sents[i])
-                
-
-            #rdm_label = [0 for _ in range(len(labels))]
-            #for i in (top_idx):
-            #    rdm_label[i] = 1
-                
-            # segs
-            rdm_segs = [0 for _ in range(len(src))]
-            
-            #tgt_txt = " ".join([src_txt[i] for i in top_idx])
-
-        else: # training                
-            sents = []
-
-            for i, c in enumerate(clss):
-                try:
-                    sents.append(src[clss[i]:clss[i+1]])
-                except IndexError:
-                    sents.append(src[clss[i]:])
-            
-            # textrank
-            #top_idx = sorted(self.rank_sent(sents))
-            
-            # random 
-            numbers = [i for i in range(len(clss))]
-            top_idx = sorted(random.sample(numbers, 3))   
-           
-            # lead
-            #top_idx = [0, 1, 2]
-
-            rdm_label = [0 for _ in range(len(labels))]
-            for i in (top_idx):
-                rdm_label[i] = 1
-                
-
-            rdm_src = []
-            for i in top_idx:
-                rdm_src.extend(sents[i])
-
-            # segs
-            rdm_segs = [0 for _ in range(len(rdm_src))]
-            
-        # clss
-        rdm_clss = top_idx #[0] # 가장 첫번째 CLS만 사용 
-
-        
 
         if(is_test):
+
             return src, labels, segs, clss, src, segs, clss, src_txt, tgt_txt
         else:
-            #return src, labels, segs, clss, rdm_src, rdm_segs, rdm_clss#, label
+            labels = labels.tolist()
+            rdm_src = ex['rdm_src']
+            rdm_segs = ex['rdm_segs']
+            rdm_clss = ex['rdm_clss']
+            
+            # sents = []
 
-            return src, rdm_label, segs, clss, rdm_src, rdm_segs, rdm_clss#, label
+            # for i, c in enumerate(clss):
+            #     try:
+            #         sents.append(src[clss[i]:clss[i+1]])
+            #     except IndexError:
+            #         sents.append(src[clss[i]:])
+            
+            
+            # # random 
+            # # numbers = [i for i in range(len(clss))]
+            # # top_idx = sorted(random.sample(numbers, 3))  
+            
+            # #pacsum
+            # top_idx = sorted(self.pacsum(sents)) 
+            # # textrank
+            # #top_idx = sorted(self.rank_sent(sents)) 
 
+
+            # rdm_label = [0 for _ in range(len(labels))]
+            # for i in (top_idx):
+            #     rdm_label[i] = 1
+                
+            # rdm_src = []
+            # for i in top_idx:
+            #     rdm_src.extend(sents[i])
+
+
+
+            # # segs
+            # #rdm_segs = [0 for _ in range(len(rdm_src))]
+            # rdm_segs = []
+            # flag = 0
+            # for i in rdm_src:
+            #     rdm_segs.append(flag)
+            #     if i == 102:
+            #         if flag == 0:
+            #             flag = 1
+            #         elif flag == 1:
+            #             flag = 0
+            
+            # # clss
+            # rdm_clss = []
+            
+            # for i, n in enumerate(rdm_src):
+            #     if n == 101:
+            #         rdm_clss.append(i)
+
+            tgt_txt = " ".join([src_txt[n] for n, i in enumerate(labels) if int(i) == 1])
+
+            return src, labels, segs, clss, rdm_src, rdm_segs, rdm_clss, src_txt, tgt_txt#, label
+            
+            #return src, labels, segs, clss, src_txt, tgt_txt#, label
     def batch_buffer(self, data, batch_size):
         minibatch, size_so_far = [], 0
         for ex in data:
@@ -325,6 +340,7 @@ class DataIterator(object):
             elif size_so_far > batch_size:
                 yield minibatch[:-1]
                 minibatch, size_so_far = minibatch[-1:], simple_batch_size_fn(ex, 1)
+        print("batch: ", len(minibatch))
         if minibatch:
             yield minibatch
 
@@ -355,5 +371,4 @@ class DataIterator(object):
 
                 yield batch
             return
-
 

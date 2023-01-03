@@ -6,6 +6,18 @@ import torch.nn as nn
 from models.neural import MultiHeadedAttention, PositionwiseFeedForward
 from models.rnn import LayerNormLSTM
 
+class topicClassifier(nn.Module):
+    def __init__(self, hidden_size):
+        super(topicClassifier, self).__init__()
+        self.linear1 = nn.Linear(hidden_size, 1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        h = self.linear1(x).squeeze(-1)
+        sent_scores = self.sigmoid(h) #* mask_cls.float()
+
+        return sent_scores
+
 
 class Classifier(nn.Module):
     def __init__(self, hidden_size):

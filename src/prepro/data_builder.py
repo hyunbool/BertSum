@@ -17,6 +17,15 @@ from others.logging import logger
 from others.utils import clean
 from prepro.utils import _get_word_ngrams
 
+from PacSum.code.extractor import *
+from PacSum.code.extractor_weighted import *
+from PacSum.code.data_iterator import Dataset
+from collections import OrderedDict
+
+import h5py
+
+import torch.nn.functional as F
+from sklearn.preprocessing import StandardScaler
 
 def load_json(p, lower):
     source = []
@@ -144,13 +153,34 @@ def hashhex(s):
 class BertData():
     def __init__(self, args):
         self.args = args
+        self.sep_token = '[SEP]'
+        self.cls_token = '[CLS]'
         self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
         self.sep_vid = self.tokenizer.vocab['[SEP]']
         self.cls_vid = self.tokenizer.vocab['[CLS]']
         self.pad_vid = self.tokenizer.vocab['[PAD]']
+        
 
-    def preprocess(self, src, tgt, oracle_ids):
+    def pacsum_weighted(self, sentence_token, extractor):
+        # 데이터 가져오기
+        tune_dataset = Dataset(sentence_token, vocab_file="./pacssum_models/vocab.txt")
+        tune_dataset_iterator = tune_dataset.iterate_once_doc_bert() # tune_dataset_iterator = value
+        summaries = extractor.extract_summary(tune_dataset_iterator)
 
+        return summaries[0]
+    
+    def pacsum(self, sentence_token, extractor):
+        # 데이터 가져오기
+        tune_dataset = Dataset(sentence_token, vocab_file="./pacssum_models/vocab.txt")
+        tune_dataset_iterator = tune_dataset.iterate_once_doc_bert() # tune_dataset_iterator = value
+        summaries = extractor.extract_summary(tune_dataset_iterator)
+
+        return summaries[0]
+        
+        #python preprocess.py -mode format_to_bert -raw_path ./json_data/train -save_path ./bert_data_pacsum_weighted -oracle_mode greedy -n_cpus 1 -log_file ../logs/preprocess.log
+
+    def preprocess_weighted(self, src, tgt, oracle_ids, extractor):
+        
         if (len(src) == 0):
             return None
 
@@ -158,10 +188,11 @@ class BertData():
         labels = [0] * len(src)
         for l in oracle_ids:
             labels[l] = 1
-
+        
         idxs = [i for i, s in enumerate(src) if (len(s) > self.args.min_src_ntokens)]
 
         src = [src[i][:self.args.max_src_ntokens] for i in idxs]
+        
         labels = [labels[i] for i in idxs]
         src = src[:self.args.max_nsents]
         labels = labels[:self.args.max_nsents]
@@ -180,6 +211,7 @@ class BertData():
         src_subtokens = ['[CLS]'] + src_subtokens + ['[SEP]']
 
         src_subtoken_idxs = self.tokenizer.convert_tokens_to_ids(src_subtokens)
+        
         _segs = [-1] + [i for i, t in enumerate(src_subtoken_idxs) if t == self.sep_vid]
         segs = [_segs[i] - _segs[i - 1] for i in range(1, len(_segs))]
         segments_ids = []
@@ -194,10 +226,196 @@ class BertData():
         tgt_txt = '<q>'.join([' '.join(tt) for tt in tgt]) # gold label
         src_txt = [original_src_txt[i] for i in idxs]
         doc_txt = ' '.join(src_txt)
-        return src_subtoken_idxs, labels, segments_ids, cls_ids, src_txt, tgt_txt, doc_txt
+        
+        # rdm
+        sents = []
 
+        for i, c in enumerate(cls_ids):
+            try:
+                sents.append(src_subtoken_idxs[cls_ids[i]:cls_ids[i+1]])
+            except IndexError:
+                sents.append(src_subtoken_idxs[cls_ids[i]:])
+        
+        top_idx, scores = self.pacsum(src_txt[:len(sents)], extractor) #sorted(self.pacsum(src_txt[:len(sents)], extractor)) 
+        
+        #top_idx = [0, 1, 2]
 
-def format_to_bert(args):
+        rdm_labels = F.softmax(torch.Tensor([s[1] for s in scores]), dim=0) #[0 for _ in range(len(labels))]
+
+        for i in (top_idx):
+            rdm_labels[i] = 1
+        
+        rdm_src = []
+        for i in top_idx:
+            rdm_src.extend(sents[i])
+
+        # segs
+        rdm_segs = []
+        flag = 0
+        for i in rdm_src:
+            rdm_segs.append(flag)
+            if i == 102:
+                if flag == 0:
+                    flag = 1
+                elif flag == 1:
+                    flag = 0
+
+        # clss
+        rdm_clss = []
+        
+        for i, n in enumerate(rdm_src):
+            if n == 101:
+                rdm_clss.append(i)
+                    
+
+        tgt = sum(tgt, [])
+        abstract = ' '.join(tgt)
+
+        return src_subtoken_idxs, labels, segments_ids, cls_ids, src_txt, tgt_txt, doc_txt, rdm_src, rdm_labels, rdm_segs, rdm_clss, abstract
+    
+    def preprocess(self, src, tgt, oracle_ids, extractor):
+        
+        if (len(src) == 0):
+            return None
+
+        original_src_txt = [' '.join(s) for s in src]
+        labels = [0] * len(src)
+        for l in oracle_ids:
+            labels[l] = 1
+        
+        idxs = [i for i, s in enumerate(src) if (len(s) > self.args.min_src_ntokens)]
+
+        src = [src[i][:self.args.max_src_ntokens] for i in idxs]
+        
+        labels = [labels[i] for i in idxs]
+        src = src[:self.args.max_nsents]
+        labels = labels[:self.args.max_nsents]
+
+        if (len(src) < self.args.min_nsents):
+            return None
+        if (len(labels) == 0):
+            return None
+
+        src_txt = [' '.join(sent) for sent in src]
+        # text = [' '.join(ex['src_txt'][i].split()[:self.args.max_src_ntokens]) for i in idxs]
+        # text = [_clean(t) for t in text]
+        text = ' [SEP] [CLS] '.join(src_txt)
+        src_subtokens = self.tokenizer.tokenize(text)
+        src_subtokens = src_subtokens[:510]
+        src_subtokens = ['[CLS]'] + src_subtokens + ['[SEP]']
+
+        src_subtoken_idxs = self.tokenizer.convert_tokens_to_ids(src_subtokens)
+        
+        _segs = [-1] + [i for i, t in enumerate(src_subtoken_idxs) if t == self.sep_vid]
+        segs = [_segs[i] - _segs[i - 1] for i in range(1, len(_segs))]
+        segments_ids = []
+        for i, s in enumerate(segs):
+            if (i % 2 == 0):
+                segments_ids += s * [0]
+            else:
+                segments_ids += s * [1]
+        cls_ids = [i for i, t in enumerate(src_subtoken_idxs) if t == self.cls_vid]
+        labels = labels[:len(cls_ids)]
+
+        tgt_txt = '<q>'.join([' '.join(tt) for tt in tgt]) # gold label
+        src_txt = [original_src_txt[i] for i in idxs]
+        doc_txt = ' '.join(src_txt)
+        
+        # rdm
+        sents = []
+
+        for i, c in enumerate(cls_ids):
+            try:
+                sents.append(src_subtoken_idxs[cls_ids[i]:cls_ids[i+1]])
+            except IndexError:
+                sents.append(src_subtoken_idxs[cls_ids[i]:])
+        
+        top_idx = sorted(self.pacsum(src_txt[:len(sents)], extractor)) 
+
+        #top_idx = [0, 1, 2]
+
+        rdm_labels = [0 for _ in range(len(labels))]
+        for i in (top_idx):
+            rdm_labels[i] = 1
+            
+        rdm_src = []
+        for i in top_idx:
+            rdm_src.extend(sents[i])
+            
+        # segs
+        rdm_segs = []
+        flag = 0
+        for i in rdm_src:
+            rdm_segs.append(flag)
+            if i == 102:
+                if flag == 0:
+                    flag = 1
+                elif flag == 1:
+                    flag = 0
+        
+        # clss
+        rdm_clss = []
+        
+        for i, n in enumerate(rdm_src):
+            if n == 101:
+                rdm_clss.append(i)
+                    
+
+        tgt = sum(tgt, [])
+        abstract = ' '.join(tgt)
+
+        return src_subtoken_idxs, labels, segments_ids, cls_ids, src_txt, tgt_txt, doc_txt, rdm_src, rdm_labels, rdm_segs, rdm_clss, abstract
+
+def format_to_bert_train_weighted(args):
+    extractor = PacSumExtractorWithBertWeighted(bert_config_file = "/home/tako/BertSum/pacssum_models/bert_config.json",
+                            bert_model_file = "./pacssum_models/pytorch_model_finetuned.bin")
+    if (args.dataset != ''):
+        datasets = [args.dataset]
+    else:
+        datasets = ['train', 'valid', 'test']
+    for corpus_type in datasets:
+        print(corpus_type)
+        
+        a_lst = []
+        for json_f in glob.glob(pjoin(args.raw_path, '*' + corpus_type + '.*.json')):
+            real_name = json_f.split('/')[-1]
+            a_lst.append((json_f, args, pjoin(args.save_path, real_name.replace('json', 'bert.pt'))))
+        for a in a_lst:
+            _format_to_bert_train_weighted(a, extractor)
+        # pool = Pool(args.n_cpus)
+        # for d in pool.imap(_format_to_bert_train, a_lst, extractor):
+        #     pass
+
+        # pool.close()
+        # pool.join()
+        
+def format_to_bert_train(args):
+    extractor = PacSumExtractorWithBert(bert_config_file = "/home/tako/BertSum/pacssum_models/bert_config.json",
+                            bert_model_file = "./pacssum_models/pytorch_model_finetuned.bin")
+    if (args.dataset != ''):
+        datasets = [args.dataset]
+    else:
+        datasets = ['train', 'valid', 'test']
+    for corpus_type in datasets:
+        print(corpus_type)
+        
+        a_lst = []
+        for json_f in glob.glob(pjoin(args.raw_path, '*' + corpus_type + '.*.json')):
+            real_name = json_f.split('/')[-1]
+            a_lst.append((json_f, args, pjoin(args.save_path, real_name.replace('json', 'bert.pt'))))
+        for a in a_lst:
+            _format_to_bert_train(a, extractor)
+        # pool = Pool(args.n_cpus)
+        # for d in pool.imap(_format_to_bert_train, a_lst, extractor):
+        #     pass
+
+        # pool.close()
+        # pool.join()
+        
+def format_to_bert_test_weighted(args):
+    extractor = PacSumExtractorWithBertWeighted(bert_config_file = "/home/tako/BertSum/pacssum_models/bert_config.json",
+                            bert_model_file = "./pacssum_models/pytorch_model_finetuned.bin")
+    
     if (args.dataset != ''):
         datasets = [args.dataset]
     else:
@@ -207,12 +425,36 @@ def format_to_bert(args):
         for json_f in glob.glob(pjoin(args.raw_path, '*' + corpus_type + '.*.json')):
             real_name = json_f.split('/')[-1]
             a_lst.append((json_f, args, pjoin(args.save_path, real_name.replace('json', 'bert.pt'))))
-        pool = Pool(args.n_cpus)
-        for d in pool.imap(_format_to_bert, a_lst):
-            pass
+        for a in a_lst:
+            _format_to_bert_test_weighted(a, extractor)
+        # pool = Pool(args.n_cpus)
+        # for d in pool.imap(_format_to_bert_train, a_lst, extractor):
+        #     pass
 
-        pool.close()
-        pool.join()
+        # pool.close()
+        # pool.join()
+        
+def format_to_bert_test(args):
+    extractor = PacSumExtractorWithBert(bert_config_file = "/home/tako/BertSum/pacssum_models/bert_config.json",
+                            bert_model_file = "./pacssum_models/pytorch_model_finetuned.bin")
+    
+    if (args.dataset != ''):
+        datasets = [args.dataset]
+    else:
+        datasets = ['train', 'valid', 'test']
+    for corpus_type in datasets:
+        a_lst = []
+        for json_f in glob.glob(pjoin(args.raw_path, '*' + corpus_type + '.*.json')):
+            real_name = json_f.split('/')[-1]
+            a_lst.append((json_f, args, pjoin(args.save_path, real_name.replace('json', 'bert.pt'))))
+        for a in a_lst:
+            _format_to_bert_test(a, extractor)
+        # pool = Pool(args.n_cpus)
+        # for d in pool.imap(_format_to_bert_train, a_lst, extractor):
+        #     pass
+
+        # pool.close()
+        # pool.join()
 
 
 def tokenize(args):
@@ -243,8 +485,73 @@ def tokenize(args):
             tokenized_stories_dir, num_tokenized, stories_dir, num_orig))
     print("Successfully finished tokenizing %s to %s.\n" % (stories_dir, tokenized_stories_dir))
 
+def _format_to_bert_train_weighted(params, extractor):
+    json_file, args, save_file = params
+    if (os.path.exists(save_file)):
+        logger.info('Ignore %s' % save_file)
+        return
 
-def _format_to_bert(params):
+    bert = BertData(args)
+
+    #logger.info('Processing %s' % json_file)
+    jobs = json.load(open(json_file))
+    datasets = []
+    for d in jobs:
+        source, tgt = d['src'], d['tgt'] # tgt: gold label
+
+        if (args.oracle_mode == 'greedy'):
+            
+            oracle_ids = greedy_selection(source, tgt, 3)
+        elif (args.oracle_mode == 'combination'):
+            oracle_ids = combination_selection(source, tgt, 3)
+            
+        b_data = bert.preprocess_weighted(source, tgt, oracle_ids, extractor)
+        if (b_data is None):
+            continue
+        indexed_tokens, labels, segments_ids, cls_ids, src_txt, tgt_txt, doc_txt, rdm_src, rdm_labels, rdm_segs, rdm_clss, abstract = b_data
+        b_data_dict = {"src": indexed_tokens, "labels": rdm_labels, "segs": segments_ids, 'clss': cls_ids,
+                       'src_txt': src_txt, "tgt_txt": tgt_txt, "doc_txt": doc_txt, 'rdm_src': rdm_src,
+                       'rdm_segs': rdm_segs, 'rdm_clss': rdm_clss, 'abstract': abstract}
+        datasets.append(b_data_dict)
+    logger.info('Saving to %s' % save_file)
+    torch.save(datasets, save_file)
+    datasets = []
+    gc.collect()
+    
+def _format_to_bert_train(params, extractor):
+    json_file, args, save_file = params
+    if (os.path.exists(save_file)):
+        logger.info('Ignore %s' % save_file)
+        return
+
+    bert = BertData(args)
+
+    #logger.info('Processing %s' % json_file)
+    jobs = json.load(open(json_file))
+    datasets = []
+    for d in jobs:
+        source, tgt = d['src'], d['tgt'] # tgt: gold label
+
+        if (args.oracle_mode == 'greedy'):
+            
+            oracle_ids = greedy_selection(source, tgt, 3)
+        elif (args.oracle_mode == 'combination'):
+            oracle_ids = combination_selection(source, tgt, 3)
+            
+        b_data = bert.preprocess(source, tgt, oracle_ids, extractor)
+        if (b_data is None):
+            continue
+        indexed_tokens, labels, segments_ids, cls_ids, src_txt, tgt_txt, doc_txt, rdm_src, rdm_labels, rdm_segs, rdm_clss, abstract = b_data
+        b_data_dict = {"src": indexed_tokens, "labels": rdm_labels, "segs": segments_ids, 'clss': cls_ids,
+                       'src_txt': src_txt, "tgt_txt": tgt_txt, "doc_txt": doc_txt, 'rdm_src': rdm_src,
+                       'rdm_segs': rdm_segs, 'rdm_clss': rdm_clss, 'abstract': abstract}
+        datasets.append(b_data_dict)
+    logger.info('Saving to %s' % save_file)
+    torch.save(datasets, save_file)
+    datasets = []
+    gc.collect()
+   
+def _format_to_bert_test_weighted(params, extractor):
     json_file, args, save_file = params
     if (os.path.exists(save_file)):
         logger.info('Ignore %s' % save_file)
@@ -258,19 +565,53 @@ def _format_to_bert(params):
     for d in jobs:
         #print(d)
         source, tgt = d['src'], d['tgt'] # tgt: gold label
-        #print("source: ", source)
-        #print("="*30)
+
         if (args.oracle_mode == 'greedy'):
             
             oracle_ids = greedy_selection(source, tgt, 3)
         elif (args.oracle_mode == 'combination'):
             oracle_ids = combination_selection(source, tgt, 3)
-        b_data = bert.preprocess(source, tgt, oracle_ids)
+        b_data = bert.preprocess_weighted(source, tgt, oracle_ids, extractor)
         if (b_data is None):
             continue
-        indexed_tokens, labels, segments_ids, cls_ids, src_txt, tgt_txt, doc_txt = b_data
+        indexed_tokens, labels, segments_ids, cls_ids, src_txt, tgt_txt, doc_txt, rdm_src, rdm_labels, rdm_segs, rdm_clss, abstract = b_data
         b_data_dict = {"src": indexed_tokens, "labels": labels, "segs": segments_ids, 'clss': cls_ids,
-                       'src_txt': src_txt, "tgt_txt": tgt_txt, "doc_txt": doc_txt}
+                       'src_txt': src_txt, "tgt_txt": abstract, "doc_txt": doc_txt, 'rdm_src': indexed_tokens,
+                       'rdm_segs': segments_ids, 'rdm_clss': cls_ids, 'abstract': abstract}
+        datasets.append(b_data_dict)
+    logger.info('Saving to %s' % save_file)
+    torch.save(datasets, save_file)
+    datasets = []
+    gc.collect()
+    
+    
+def _format_to_bert_test(params, extractor):
+    json_file, args, save_file = params
+    if (os.path.exists(save_file)):
+        logger.info('Ignore %s' % save_file)
+        return
+
+    bert = BertData(args)
+
+    #logger.info('Processing %s' % json_file)
+    jobs = json.load(open(json_file))
+    datasets = []
+    for d in jobs:
+        #print(d)
+        source, tgt = d['src'], d['tgt'] # tgt: gold label
+
+        if (args.oracle_mode == 'greedy'):
+            
+            oracle_ids = greedy_selection(source, tgt, 3)
+        elif (args.oracle_mode == 'combination'):
+            oracle_ids = combination_selection(source, tgt, 3)
+        b_data = bert.preprocess(source, tgt, oracle_ids, extractor)
+        if (b_data is None):
+            continue
+        indexed_tokens, labels, segments_ids, cls_ids, src_txt, tgt_txt, doc_txt, rdm_src, rdm_labels, rdm_segs, rdm_clss, abstract = b_data
+        b_data_dict = {"src": indexed_tokens, "labels": labels, "segs": segments_ids, 'clss': cls_ids,
+                       'src_txt': src_txt, "tgt_txt": abstract, "doc_txt": doc_txt, 'rdm_src': indexed_tokens,
+                       'rdm_segs': segments_ids, 'rdm_clss': cls_ids, 'abstract': abstract}
         datasets.append(b_data_dict)
     logger.info('Saving to %s' % save_file)
     torch.save(datasets, save_file)
