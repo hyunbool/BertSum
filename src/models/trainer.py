@@ -216,51 +216,51 @@ class Trainer(object):
                         normalization = 0
                         if (step % self.save_checkpoint_steps == 0 and self.gpu_rank == 0):
                             self._save(step)
-                            can_path = '%s_step%d.candidate'%("./results/training",step)
-                            gold_path = '%s_step%d.gold' % ("./results/training", step)
-                            gold = []
-                            pred = []
+                            # can_path = '%s_step%d.candidate'%("./results/training",step)
+                            # gold_path = '%s_step%d.gold' % ("./results/training", step)
+                            # gold = []
+                            # pred = []
                         
-                            with open(can_path, 'w') as save_pred:
-                                with open(gold_path, 'w') as save_gold:
-                                    sent_scores = sent_scores + mask.float()
-                                    sent_scores = sent_scores.cpu().data.numpy()
-                                    selected_ids = np.argsort(-sent_scores, 1)
+                            # with open(can_path, 'w') as save_pred:
+                            #     with open(gold_path, 'w') as save_gold:
+                            #         sent_scores = sent_scores + mask.float()
+                            #         sent_scores = sent_scores.cpu().data.numpy()
+                            #         selected_ids = np.argsort(-sent_scores, 1)
                                     
-                                    for i, idx in enumerate(selected_ids):
-                                        _pred = []
-                                        predictions = {}
-                                        if(len(batch.src_str[i])==0):
-                                            continue
-                                        for j in selected_ids[i][:len(batch.src_str[i])]:
-                                            if(j>=len(batch.src_str[i])):
-                                                continue
-                                            candidate = batch.src_str[i][j].strip()
-                                            if(self.args.block_trigram):
-                                                if(not _block_tri(candidate,_pred)):
-                                                    _pred.append(candidate)
-                                                    predictions[j] = candidate
-                                            else:
-                                                _pred.append(candidate)
-                                                predictions[j] = candidate
+                            #         for i, idx in enumerate(selected_ids):
+                            #             _pred = []
+                            #             predictions = {}
+                            #             if(len(batch.src_str[i])==0):
+                            #                 continue
+                            #             for j in selected_ids[i][:len(batch.src_str[i])]:
+                            #                 if(j>=len(batch.src_str[i])):
+                            #                     continue
+                            #                 candidate = batch.src_str[i][j].strip()
+                            #                 if(self.args.block_trigram):
+                            #                     if(not _block_tri(candidate,_pred)):
+                            #                         _pred.append(candidate)
+                            #                         predictions[j] = candidate
+                            #                 else:
+                            #                     _pred.append(candidate)
+                            #                     predictions[j] = candidate
 
-                                            if ((not self.args.recall_eval) and len(_pred) == 3):
-                                                break
+                            #                 if ((not self.args.recall_eval) and len(_pred) == 3):
+                            #                     break
 
-                                        _pred = [x[1] for x in sorted(predictions.items())]
+                            #             _pred = [x[1] for x in sorted(predictions.items())]
 
-                                        _pred = '<q>'.join(_pred)
-                                        if(self.args.recall_eval):
-                                            _pred = ' '.join(_pred.split()[:len(batch.tgt_str[i].split())])
+                            #             _pred = '<q>'.join(_pred)
+                            #             if(self.args.recall_eval):
+                            #                 _pred = ' '.join(_pred.split()[:len(batch.tgt_str[i].split())])
 
-                                        pred.append(_pred)
-                                        gold.append(batch.tgt_str[i])
-                                    for i in range(len(gold)):
-                                        save_gold.write(gold[i].strip()+'\n')
-                                    for i in range(len(pred)):
-                                        save_pred.write(pred[i].strip()+'\n')
-                            rouges = test_rouge(self.args.temp_dir, can_path, gold_path)
-                            logger.info('Rouges at step %d \n%s' % (step, rouge_results_to_str(rouges)))
+                            #             pred.append(_pred)
+                            #             gold.append(batch.tgt_str[i])
+                            #         for i in range(len(gold)):
+                            #             save_gold.write(gold[i].strip()+'\n')
+                            #         for i in range(len(pred)):
+                            #             save_pred.write(pred[i].strip()+'\n')
+                            # rouges = test_rouge(self.args.temp_dir, can_path, gold_path)
+                            # logger.info('Rouges at step %d \n%s' % (step, rouge_results_to_str(rouges)))
 
                         step += 1
                         if step > train_steps:
@@ -674,10 +674,11 @@ class Trainer(object):
             rdm_mask_cls = batch.rdm_mask_cls
             src_str = batch.src_str
             tgt_str = batch.tgt_str
+            sents = batch.sents
             #tp = batch.tp
             
 
-            sent_scores, mask = self.model(src, segs, clss, mask, mask_cls, rdm_src, rdm_segs, rdm_clss, rdm_mask, rdm_mask_cls)#, src_str, tgt_str)#, tp)
+            sent_scores, mask = self.model(src, segs, clss, mask, mask_cls, rdm_src, rdm_segs, rdm_clss, rdm_mask, rdm_mask_cls, sents)#, src_str, tgt_str)#, tp)
             #print("sent_scores: ", sent_scores)
 
             

@@ -21,11 +21,14 @@ from PacSum.code.extractor import *
 from PacSum.code.extractor_weighted import *
 from PacSum.code.data_iterator import Dataset
 from collections import OrderedDict
+from transformers import RobertaTokenizer
 
 import h5py
 
 import torch.nn.functional as F
 from sklearn.preprocessing import StandardScaler
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 def load_json(p, lower):
     source = []
@@ -155,10 +158,14 @@ class BertData():
         self.args = args
         self.sep_token = '[SEP]'
         self.cls_token = '[CLS]'
-        self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
-        self.sep_vid = self.tokenizer.vocab['[SEP]']
-        self.cls_vid = self.tokenizer.vocab['[CLS]']
-        self.pad_vid = self.tokenizer.vocab['[PAD]']
+        #self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
+        self.tokenizer = RobertaTokenizer.from_pretrained("roberta-base", sep_token = '[SEP]', cls_token = '[CLS]', pad_token='[PAD]')
+        self.sep_vid = self.tokenizer.convert_tokens_to_ids(self.tokenizer.sep_token)
+        self.cls_vid = self.tokenizer.convert_tokens_to_ids(self.tokenizer.cls_token)
+        self.pad_vid = self.tokenizer.convert_tokens_to_ids(self.tokenizer.pad_token)
+        # self.sep_vid = self.tokenizer.vocab['[SEP]']
+        # self.cls_vid = self.tokenizer.vocab['[CLS]']
+        # self.pad_vid = self.tokenizer.vocab['[PAD]']
         
 
     def pacsum_weighted(self, sentence_token, extractor):
@@ -242,9 +249,9 @@ class BertData():
 
         rdm_labels = F.softmax(torch.Tensor([s[1] for s in scores]), dim=0) #[0 for _ in range(len(labels))]
 
-        for i in (top_idx):
-            rdm_labels[i] = 1
-        
+        # for i in (top_idx):
+        #     rdm_labels[i] = 1
+
         rdm_src = []
         for i in top_idx:
             rdm_src.extend(sents[i])
@@ -300,13 +307,19 @@ class BertData():
         # text = [' '.join(ex['src_txt'][i].split()[:self.args.max_src_ntokens]) for i in idxs]
         # text = [_clean(t) for t in text]
         text = ' [SEP] [CLS] '.join(src_txt)
+
         src_subtokens = self.tokenizer.tokenize(text)
-        src_subtokens = src_subtokens[:510]
+        # sep: 50265 / cls: 50267
+        
+        # src_subtokens = self.tokenizer(text)['input_ids']
+        src_subtokens = src_subtokens[:510] # + [50265]
         src_subtokens = ['[CLS]'] + src_subtokens + ['[SEP]']
 
+
+        #src_subtoken_idxs = self.tokenizer.tokenize(src_subtokens)
         src_subtoken_idxs = self.tokenizer.convert_tokens_to_ids(src_subtokens)
-        
         _segs = [-1] + [i for i, t in enumerate(src_subtoken_idxs) if t == self.sep_vid]
+
         segs = [_segs[i] - _segs[i - 1] for i in range(1, len(_segs))]
         segments_ids = []
         for i, s in enumerate(segs):
@@ -314,7 +327,9 @@ class BertData():
                 segments_ids += s * [0]
             else:
                 segments_ids += s * [1]
+
         cls_ids = [i for i, t in enumerate(src_subtoken_idxs) if t == self.cls_vid]
+
         labels = labels[:len(cls_ids)]
 
         tgt_txt = '<q>'.join([' '.join(tt) for tt in tgt]) # gold label
@@ -347,7 +362,7 @@ class BertData():
         flag = 0
         for i in rdm_src:
             rdm_segs.append(flag)
-            if i == 102:
+            if i == 50265:
                 if flag == 0:
                     flag = 1
                 elif flag == 1:
@@ -357,9 +372,10 @@ class BertData():
         rdm_clss = []
         
         for i, n in enumerate(rdm_src):
-            if n == 101:
+            if n == 50267:
                 rdm_clss.append(i)
-                    
+                
+
 
         tgt = sum(tgt, [])
         abstract = ' '.join(tgt)
@@ -667,3 +683,6 @@ def _format_to_lines(params):
     f, args = params
     source, tgt = load_json(f, args.lower)
     return {'src': source, 'tgt': tgt}
+
+
+

@@ -2,6 +2,7 @@ import os
 import torch
 import torch.nn as nn
 from pytorch_pretrained_bert import BertModel, BertConfig
+from transformers import RobertaTokenizer, RobertaModel
 from torch.nn.init import xavier_uniform_
 
 from models.encoder import TransformerInterEncoder, Classifier, RNNEncoder
@@ -140,7 +141,28 @@ class Bert(nn.Module):
         top_vec = encoded_layers[-1]
         return top_vec
 
+class RoBerta(nn.Module):
+    def __init__(self, temp_dir):
+        super(RoBerta, self).__init__()
+        #self.model = BartModel.from_pretrained('facebook/bart-base')
+        self.tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
+        self.model = RobertaModel.from_pretrained("roberta-base")
+        self.model.resize_token_embeddings(len(self.tokenizer)+3)
+        #self.model = BartModel.from_pretrained("/home/tako/BertSum/checkpoint-179000")
+            
 
+    def forward(self, x):
+        """segs: segment embedding
+        Returns:
+            _type_: _description_
+        """
+        output = self.model(input_ids=x)
+        
+        #top_vec = output.last_hidden_state
+        top_vec = output.last_hidden_state
+        
+        return top_vec
+    
         
 class Summarizer(nn.Module):
     def __init__(self, args, device, load_pretrained_bert = False, load_pretrained_bart = False, bert_config = None, bart_config = None, is_test=False):
@@ -151,10 +173,17 @@ class Summarizer(nn.Module):
         self.n_topic = self.args.n_topic
 
         self.bert_extractor = Bert(args.temp_dir, load_pretrained_bert, bert_config)
+
         
-        self.topicmodel = ProdLDA(768, num_topics=args.n_topic)
-        self.topicmodel.load_state_dict(torch.load(args.topicmodel))
-        self.topicmodel.eval()
+        self.threshold_dict = {10: 0.0971650390340262, 30: 0.030141125277372813, 50: 0.017866419390398635, 100: 0.008823595488367579, 150: 0.0058770036856582945, 200: 0.0044062418769848745}
+        
+        with open('./ldamodel_%s.pkl' % str(self.args.n_topic), 'rb') as f:
+            self.ldamodel = pickle.load(f)
+        
+        with open('./corpus.pkl', 'rb') as f:
+            self.dictionary = pickle.load(f)
+        
+        self.threshold = self.threshold_dict[self.args.n_topic]
 
 
         if (args.encoder == 'classifier'):
@@ -189,10 +218,12 @@ class Summarizer(nn.Module):
     def load_cp(self, pt):
         self.load_state_dict(pt['model'], strict=True)
 
-    def forward(self, x, segs, clss, mask, mask_cls, rdm_src, rdm_segs, rdm_clss, rdm_mask, rdm_mask_cls):#, tp, sentence_range=None):
+    def forward(self, x, segs, clss, mask, mask_cls, rdm_src, rdm_segs, rdm_clss, rdm_mask, rdm_mask_cls, sents):#, tp, sentence_range=None):
         
         # autoencoder
-        rdm_top_vec = self.bert_extractor(rdm_src, rdm_segs, rdm_mask)
+        #rdm_top_vec = self.bert_extractor, rdm_segs, rdm_mask)
+        rdm_top_vec = self.bert_extractor(rdm_src)#.detach().to('cpu')#.numpy()#, rdm_segs, rdm_mask)
+
         rdm_sents_vec = rdm_top_vec[torch.arange(rdm_top_vec.size(0)).unsqueeze(1), rdm_clss]
         rdm_sents_vec = rdm_sents_vec * rdm_mask_cls[:, :, None].float()
 
@@ -210,7 +241,8 @@ class Summarizer(nn.Module):
         
         
         # extractor
-        top_vec = self.bert_extractor(x, segs, mask) # 모든 문서에 대한 임베딩 [문장개수, 768]
+        # top_vec = self.bert_extractor(x, segs, mask) # 모든 문서에 대한 임베딩 [문장개수, 768]
+        top_vec = self.bert_extractor(x) # 모든 문서에 대한 임베딩 [문장개수, 768]
 
         sents_vec = top_vec[torch.arange(top_vec.size(0)).unsqueeze(1), clss]
         sents_vec = sents_vec * mask_cls[:, :, None].float()

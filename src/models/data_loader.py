@@ -41,6 +41,7 @@ class Batch(object):
             pre_rdm_src = [x[4] for x in data]
             pre_rdm_segs = [x[5] for x in data]
             pre_rdm_clss = [x[6] for x in data]
+            
 
             # bertsum for important sentence
             rdm_src = torch.tensor(self._pad(pre_rdm_src, 0))
@@ -84,6 +85,9 @@ class Batch(object):
             setattr(self, 'src_str', src_str)
             tgt_str = [x[-1] for x in data]
             setattr(self, 'tgt_str', tgt_str)
+            
+            sents = [x[-3] for x in data]
+            setattr(self, 'sents', sents)
 
     def __len__(self):
         return self.batch_size
@@ -263,18 +267,37 @@ class DataIterator(object):
 
             return src, labels, segs, clss, src, segs, clss, src_txt, tgt_txt
         else:
-            labels = labels.tolist()
+            #labels = labels.tolist()
             rdm_src = ex['rdm_src']
             rdm_segs = ex['rdm_segs']
             rdm_clss = ex['rdm_clss']
-            
-            # sents = []
 
-            # for i, c in enumerate(clss):
-            #     try:
-            #         sents.append(src[clss[i]:clss[i+1]])
-            #     except IndexError:
-            #         sents.append(src[clss[i]:])
+            
+            # # segs
+            # rdm_segs = []
+            # flag = 0
+            # for i in rdm_src:
+            #     rdm_segs.append(flag)
+            #     if i == 50265:
+            #         if flag == 0:
+            #             flag = 1
+            #         elif flag == 1:
+            #             flag = 0
+            
+            # # clss
+            # rdm_clss = []
+            
+            # for i, n in enumerate(rdm_src):
+            #     if n == 50267:
+            #         rdm_clss.append(i)
+                    
+            sents = []
+
+            for i, c in enumerate(clss):
+                try:
+                    sents.append(src[clss[i]:clss[i+1]])
+                except IndexError:
+                    sents.append(src[clss[i]:])
             
             
             # # random 
@@ -318,7 +341,7 @@ class DataIterator(object):
 
             tgt_txt = " ".join([src_txt[n] for n, i in enumerate(labels) if int(i) == 1])
 
-            return src, labels, segs, clss, rdm_src, rdm_segs, rdm_clss, src_txt, tgt_txt#, label
+            return src, labels, segs, clss, rdm_src, rdm_segs, rdm_clss, sents, src_txt, tgt_txt#, label
             
             #return src, labels, segs, clss, src_txt, tgt_txt#, label
     def batch_buffer(self, data, batch_size):
